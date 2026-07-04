@@ -95,6 +95,9 @@ API_SERVER_KEY=... ./scripts/stress_hermes_builds.py \
 
 Use `--prompt-mode giant` to test whether an intentionally over-scoped product
 prompt is converted into staged verified layers instead of a one-shot build.
+Use `--prompt-mode probe` first when testing a new or smaller model: the prompts
+are compact and rely on the configured Hermes build workflow instead of naming
+every Builder Doctor tool explicitly.
 The JSON report includes staging signals such as budget use, writes before the
 first verifier, receipt use, and raw terminal verifier leaks.
 

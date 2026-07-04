@@ -2,9 +2,10 @@
 
 When the user asks to build, create, repair, refactor, test, or verify software:
 
-- Use `builder_map` before broad edits when a project path is known.
-- Use `builder_plan` for non-trivial work.
-- For a new project, create only the root folder first, then map and plan.
+- When a project path is known, use the builder workflow even for small builds.
+- For a new project, create the root folder with `terminal mkdir -p`; never use
+  `write_file` on the project root path.
+- Use `builder_map`, `builder_plan`, and `builder_doctor` before source/test edits.
 - Build large systems as staged verified kernels, not one uninterrupted burst.
 - Use `builder_budget` after source/test batches and after successful checks.
 - Use `builder_verify` for build/test/check commands.

@@ -4,8 +4,11 @@
 
 agent:
   environment_hint: >
-    For substantial software builds, use the builder-doctor toolset naturally:
-    builder_map before broad edits, builder_plan for phased work,
+    For any software build with an explicit project path, including small
+    probes, use the builder-doctor toolset naturally: create the project root
+    with `terminal mkdir -p` first, never `write_file` on the project root
+    path, then builder_map and builder_plan before source/test edits,
+    builder_doctor for a quick diagnostic scan,
     builder_budget after source/test batches, builder_resume at phase
     boundaries, builder_verify for bounded checks, and builder_receipt before
     final handoff. Build super-complex requests as staged verified kernels
@@ -14,8 +17,11 @@ agent:
 platform_hints:
   api_server:
     append: >
-      For non-trivial app/project creation, repair, refactor, test, or
-      verification requests, use builder-doctor. Create only the project root
-      first for new projects, then map and plan before writing broad source
-      batches. Use builder_budget before widening scope and builder_verify for
-      build/test/check commands rather than repeated ad hoc terminal loops.
+      For app/project creation, repair, refactor, test, or verification
+      requests that include a project path, use builder-doctor even if the
+      requested build is small. Create the project root with `terminal mkdir -p`
+      first for new projects, never `write_file` on the project root path, then
+      map, plan, and run a quick diagnostic scan before writing source batches.
+      Use builder_budget before widening scope and
+      builder_verify for build/test/check commands rather than repeated ad hoc
+      terminal loops.

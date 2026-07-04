@@ -1067,9 +1067,10 @@ def _boundary_candidate_paths(tool_name: str, args: Any, root: Path) -> List[Pat
 def _is_raw_verifier_command(command: str) -> bool:
     patterns = [
         r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check)\b",
+        r"\b(?:vitest|jest|node\s+--test)\b",
         r"\bswift\s+(?:build|test)\b",
         r"\bcargo\s+(?:test|check|clippy|build)\b",
-        r"\bgo\s+test\b",
+        r"\bgo\s+(?:test|build|vet)\b",
         r"\buv\s+run\s+(?:pytest|python\s+-m\s+pytest|python\s+-m\s+compileall)\b",
         r"\bpython(?:3)?\s+-m\s+(?:pytest|compileall)\b",
         r"(^|[;&|]\s*)pytest(?:\s|$)",
@@ -1083,6 +1084,7 @@ def _is_terminal_file_mutation_command(command: str) -> bool:
         r"(?s)\btee\s+(?:-a\s+)?[^\s]+",
         r"(?s)\bprintf\b.+>",
         r"(?s)\b(?:python3?|node|ruby|perl)\s+-\s*<<",
+        r"(?:^|[;&|]\s*)go\s+mod\s+(?:tidy|download|vendor)\b",
         r"(?:^|[;&|]\s*)(?:rm|cp|mv|touch)\b",
     ]
     return any(re.search(pattern, command) for pattern in patterns)
@@ -1141,6 +1143,26 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
     """Hermes pre_tool_call hook that enforces Builder Doctor staging."""
     if tool_name not in {"write_file", "patch", "terminal"}:
         return None
+    if tool_name == "terminal":
+        command = str(args.get("command", "")) if isinstance(args, dict) else ""
+        if _is_raw_verifier_command(command):
+            return {
+                "action": "block",
+                "message": (
+                    "Builder Doctor blocked this raw terminal verifier. Use builder_verify with the "
+                    "project_path and bounded command instead, then call builder_resume, "
+                    "builder_budget(after_verify=true), and builder_receipt on success."
+                ),
+            }
+        if _is_terminal_file_mutation_command(command):
+            return {
+                "action": "block",
+                "message": (
+                    "Builder Doctor blocked this terminal file mutation. Use write_file or patch for "
+                    "source/test/config edits, and avoid dependency/install/tidy mutations inside "
+                    "the verifier loop."
+                ),
+            }
     root = _root_from_tool_args(tool_name, args)
     if root is None:
         return None
@@ -2844,7 +2866,7 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         next_required.extend([
             "builder_verify recorded this verification in .hermes-builder/state.json.",
             "Call builder_budget with after_verify=true before writing more files.",
-            "If this is the intended stage, call builder_receipt now instead of rerunning the same command through terminal.",
+            "If this is the intended stage, call builder_receipt now. Do not send the final answer before builder_receipt.",
         ])
     state_recorded = False
     state_warning = ""
@@ -2954,23 +2976,23 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
     mixed_package_dirs = go_info.get("mixed_package_dirs", {}) if go_info.get("is_go_project") else {}
 
     issues: List[Dict[str, Any]] = []
-    if len(source_files) > max_source_files:
+    if len(source_files) >= max_source_files:
         issues.append({
             "code": "source-file-budget-exceeded",
-            "message": "The current phase has more source files than the staged-kernel budget.",
-            "evidence": f"source_files={len(source_files)} > max_source_files={max_source_files}",
+            "message": "The current phase has reached the staged-kernel source-file budget.",
+            "evidence": f"source_files={len(source_files)} >= max_source_files={max_source_files}",
         })
-    if len(test_files) > max_test_files:
+    if max_test_files == 0 and len(test_files) > 0 or max_test_files > 0 and len(test_files) >= max_test_files:
         issues.append({
             "code": "test-file-budget-exceeded",
-            "message": "The current phase has more test files than the staged-kernel budget.",
-            "evidence": f"test_files={len(test_files)} > max_test_files={max_test_files}",
+            "message": "The current phase has reached the staged-kernel test-file budget.",
+            "evidence": f"test_files={len(test_files)} >= max_test_files={max_test_files}",
         })
-    if len(source_dirs) > max_source_dirs:
+    if len(source_dirs) >= max_source_dirs:
         issues.append({
             "code": "source-dir-budget-exceeded",
-            "message": "The current phase spans too many source directories/packages.",
-            "evidence": f"source_dirs={len(source_dirs)} > max_source_dirs={max_source_dirs}",
+            "message": "The current phase has reached the staged-kernel source-directory budget.",
+            "evidence": f"source_dirs={len(source_dirs)} >= max_source_dirs={max_source_dirs}",
         })
     if mixed_package_dirs:
         issues.append({
@@ -2979,12 +3001,32 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "evidence": json.dumps(mixed_package_dirs, ensure_ascii=True, sort_keys=True),
         })
 
+    previous_guard: Dict[str, Any] = {}
+    try:
+        previous_guard = _anchor_guard(root, _guard_from_state(_load_state(root)))
+    except Exception:
+        previous_guard = {}
+    last_verify_at = str(previous_guard.get("last_verify_at") or "")
+    last_receipt_at = str(previous_guard.get("last_receipt_at") or "")
+    receipt_is_current = bool(last_receipt_at and last_verify_at and last_receipt_at >= last_verify_at)
+    post_verify_pending = (
+        previous_guard.get("last_verify_success") is True
+        and not after_verify
+        and not receipt_is_current
+    )
+
     actions: List[str] = []
     if issues:
         actions.extend([
             "Stop adding files for this phase now.",
             "If verification has not passed for the current file set, run builder_verify before any more write_file or patch calls.",
             "If verification already passed, call builder_resume and builder_receipt, then defer the extra scope to a later phase.",
+        ])
+    elif post_verify_pending:
+        actions.extend([
+            "A passing builder_verify checkpoint is already recorded for this stage.",
+            "Call builder_budget again with after_verify=true if needed, then call builder_receipt now.",
+            "Do not write more files or send the final answer before builder_receipt.",
         ])
     elif after_verify:
         actions.extend([
@@ -3008,7 +3050,13 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
         guard["last_budget_at"] = _now_iso()
         guard["last_budget_after_verify"] = after_verify
         guard["language_profile"] = _detect_language_profile(root)
-        if after_verify:
+        if issues:
+            guard["verify_required"] = True
+        elif post_verify_pending:
+            guard["writes_since_budget"] = 0
+            guard["verify_required"] = False
+            guard["receipt_required"] = True
+        elif after_verify:
             guard["writes_since_budget"] = 0
             guard["verify_required"] = False
             if guard.get("last_verify_success") is True:
@@ -3043,7 +3091,7 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             ["builder_verify", "builder_resume", "builder_receipt"]
             if issues
             else ["builder_resume", "builder_receipt"]
-            if after_verify
+            if after_verify or post_verify_pending
             else ["write_file", "patch", "builder_budget", "builder_verify"]
         ),
         "issues": issues,

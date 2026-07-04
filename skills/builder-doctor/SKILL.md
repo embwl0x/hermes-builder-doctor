@@ -79,7 +79,9 @@ Call `builder_map` with `project_path` set to the repo root. Use its result as t
 Do not guess the framework or scripts when `builder_map` can tell you.
 
 For a brand-new project path that does not exist yet:
-- Create only the root folder first.
+- Create the root folder with `terminal mkdir -p` first.
+- Never call `write_file` on the project root path; `write_file` is for files,
+  not directories.
 - Call `builder_map` on that folder before writing source/test batches.
 - Call `builder_plan` before creating more than the manifest and first tiny slice.
 
@@ -106,7 +108,8 @@ Hard gate for large builds:
 - If verification still fails after one focused fix pass, call `builder_failure_plan` again for the new first failure or call `builder_receipt` and report the remaining failure instead of continuing indefinitely.
 - Before context grows past roughly 45k tokens, force a receipt/checkpoint instead of starting another feature pass.
 - A completed vertical slice is better than an unfinished full wish list.
-- Large builds are not complete until `builder_receipt` has been called after the final successful verification.
+- A build stage is not complete until `builder_receipt` has been called after
+  the final successful verification, even when the requested project is small.
 
 Call `builder_doctor` with `project_path` set to the repo root. Use `focus` to narrow:
 - `all` — everything

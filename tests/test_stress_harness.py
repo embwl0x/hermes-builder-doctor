@@ -21,6 +21,14 @@ def load_stress_module():
 
 
 class StressHarnessTests(unittest.TestCase):
+    def test_probe_catalog_is_available_for_every_language_lane(self) -> None:
+        module = load_stress_module()
+
+        catalog = module._task_catalog("probe")
+
+        self.assertEqual(set(catalog), {"go", "node", "python", "rust", "swift"})
+        self.assertIn("configured Hermes build workflow", catalog["python"].prompt)
+
     def test_independent_zero_tests_detected_by_source_count(self) -> None:
         module = load_stress_module()
 
@@ -38,6 +46,40 @@ class StressHarnessTests(unittest.TestCase):
                 2,
             )
         )
+
+    def test_independent_zero_tests_ignores_empty_cargo_doc_tests_when_unit_tests_run(self) -> None:
+        module = load_stress_module()
+
+        output = """running 8 tests
+test tests::test_consume_success ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+
+Doc-tests retry_budget
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+"""
+
+        self.assertFalse(module.independent_zero_tests_detected("cargo test", output, 8))
+
+    def test_terminal_verify_leak_detection_includes_equivalent_node_runner(self) -> None:
+        module = load_stress_module()
+
+        summary = module.summarize_events(
+            [
+                {
+                    "event": "tool.started",
+                    "tool": "terminal",
+                    "preview": "node --test",
+                    "timestamp": 1.0,
+                }
+            ],
+            ("npm test",),
+        )
+
+        self.assertEqual(summary["terminal_verify_leaks"], ["node --test"])
 
     def test_timeout_stops_active_run_before_return(self) -> None:
         module = load_stress_module()

@@ -98,9 +98,105 @@ def install_shutdown_handlers() -> None:
 
 
 def _task_catalog(prompt_mode: str = "kernel") -> dict[str, StressTask]:
+    if prompt_mode == "probe":
+        return _probe_task_catalog()
     if prompt_mode == "giant":
         return _giant_task_catalog()
     return _kernel_task_catalog()
+
+
+def _probe_task_catalog() -> dict[str, StressTask]:
+    return {
+        "node": StressTask(
+            name="node",
+            label="Probe Node ESM scoring kernel",
+            root_name="node_probe_scoring",
+            verify_commands=("npm test",),
+            prompt="""
+Build a small verified Node/ESM project at {project_root}.
+
+Use the configured Hermes build workflow naturally: create the root folder with
+`terminal mkdir -p` first, never `write_file` on the project root path,
+then map, plan, run a diagnostic scan, budget, verify, checkpoint, and receipt.
+Keep the slice compact:
+package.json with a bounded `npm test` script using Node's built-in test
+runner, one scoring module, and focused tests. Implement weighted event scoring
+with deterministic tie-breaking and clear invalid-input errors. Verify it and
+finish with a concise handoff. Do not add external dependencies.
+""",
+        ),
+        "swift": StressTask(
+            name="swift",
+            label="Probe SwiftPM cooldown kernel",
+            root_name="swift_probe_cooldowns",
+            verify_commands=("swift test",),
+            prompt="""
+Build a small verified SwiftPM project at {project_root}.
+
+Use the configured Hermes build workflow naturally: create the root folder with
+`terminal mkdir -p` first, never `write_file` on the project root path,
+then map, plan, run a diagnostic scan, budget, verify, checkpoint, and receipt.
+Keep the slice compact:
+Package.swift with one library target, one XCTest target, a cooldown tracker
+that advances deterministic turns, and focused tests for activation, expiry,
+refresh, and invalid durations. Verify it and finish with a concise handoff.
+Do not add external package dependencies.
+""",
+        ),
+        "python": StressTask(
+            name="python",
+            label="Probe Python log classifier",
+            root_name="python_probe_log_classifier",
+            verify_commands=("python3 -m unittest discover -s tests",),
+            prompt="""
+Build a small verified Python project at {project_root}.
+
+Use the configured Hermes build workflow naturally: create the root folder with
+`terminal mkdir -p` first, never `write_file` on the project root path,
+then map, plan, run a diagnostic scan, budget, verify, checkpoint, and receipt.
+Keep the slice compact:
+pyproject.toml metadata, one standard-library log classifier module, tests under
+`tests/`, and unittest coverage for severity parsing, file/line extraction, stable
+fingerprints, and malformed lines. Verify it and finish with a concise handoff.
+Do not add third-party dependencies.
+""",
+        ),
+        "rust": StressTask(
+            name="rust",
+            label="Probe Rust retry budget kernel",
+            root_name="rust_probe_retry_budget",
+            verify_commands=("cargo test",),
+            prompt="""
+Build a small verified Rust project at {project_root}.
+
+Use the configured Hermes build workflow naturally: create the root folder with
+`terminal mkdir -p` first, never `write_file` on the project root path,
+then map, plan, run a diagnostic scan, budget, verify, checkpoint, and receipt.
+Keep the slice compact:
+Cargo.toml library package, a retry-budget state machine, useful Display
+errors, and unit tests for consume, reset, exhaustion, and invalid budgets.
+Verify it and finish with a concise handoff. Do not add external crates.
+""",
+        ),
+        "go": StressTask(
+            name="go",
+            label="Probe Go lease clock kernel",
+            root_name="go_probe_lease_clock",
+            verify_commands=("go test ./...",),
+            prompt="""
+Build a small verified Go module at {project_root}.
+
+Use the configured Hermes build workflow naturally: create the root folder with
+`terminal mkdir -p` first, never `write_file` on the project root path,
+then map, plan, run a diagnostic scan, budget, verify, checkpoint, and receipt.
+Keep the slice compact:
+go.mod, one package name per directory, a logical lease clock with renew,
+expire, and compare behavior, plus tests for renewal, expiry, ordering, and
+invalid durations. Verify it and finish with a concise handoff. Do not add
+third-party dependencies.
+""",
+        ),
+    }
 
 
 def _kernel_task_catalog() -> dict[str, StressTask]:
@@ -113,7 +209,8 @@ def _kernel_task_catalog() -> dict[str, StressTask]:
             prompt="""
 Build a substantial Node/ESM project at {project_root}.
 
-Use Builder Doctor deliberately: create only the root folder first, then use
+Use Builder Doctor deliberately: create the root folder with `terminal mkdir -p`
+first, never `write_file` on the project root path, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
 builder_verify, builder_failure_plan after failed verification, and
 builder_receipt. This is a stress test of those tools, so every relevant
@@ -146,7 +243,8 @@ After the first builder_verify call, fix only verification failures.
             prompt="""
 Build a substantial SwiftPM project at {project_root}.
 
-Use Builder Doctor deliberately: create only the root folder first, then use
+Use Builder Doctor deliberately: create the root folder with `terminal mkdir -p`
+first, never `write_file` on the project root path, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
 builder_verify, builder_failure_plan after failed verification, and
 builder_receipt. This is a stress test of those tools, so every relevant
@@ -178,7 +276,8 @@ After the first builder_verify call, fix only verification failures.
             prompt="""
 Build a substantial Python project at {project_root}.
 
-Use Builder Doctor deliberately: create only the root folder first, then use
+Use Builder Doctor deliberately: create the root folder with `terminal mkdir -p`
+first, never `write_file` on the project root path, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
 builder_verify, builder_failure_plan after failed verification, and
 builder_receipt. This is a stress test of those tools, so every relevant
@@ -211,7 +310,8 @@ After the first builder_verify call, fix only verification failures.
             prompt="""
 Build a substantial Rust project at {project_root}.
 
-Use Builder Doctor deliberately: create only the root folder first, then use
+Use Builder Doctor deliberately: create the root folder with `terminal mkdir -p`
+first, never `write_file` on the project root path, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
 builder_verify, builder_failure_plan after failed verification, and
 builder_receipt. This is a stress test of those tools, so every relevant
@@ -244,7 +344,8 @@ After the first builder_verify call, fix only verification failures.
             prompt="""
 Build a substantial Go module at {project_root}.
 
-Use Builder Doctor deliberately: create only the root folder first, then use
+Use Builder Doctor deliberately: create the root folder with `terminal mkdir -p`
+first, never `write_file` on the project root path, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
 builder_verify, builder_failure_plan after failed verification, and
 builder_receipt. This is a stress test of those tools, so every relevant
@@ -273,7 +374,8 @@ After the first builder_verify call, fix only verification failures.
 
 def _giant_task_catalog() -> dict[str, StressTask]:
     tool_preamble = """
-Use Builder Doctor naturally and deliberately: create only the root folder first,
+Use Builder Doctor naturally and deliberately: create the root folder with
+`terminal mkdir -p` first, never `write_file` on the project root path,
 then use builder_map, builder_plan, builder_doctor, builder_budget,
 builder_resume, builder_verify, builder_failure_plan after failed verification,
 and builder_receipt. This prompt is intentionally too large for a one-shot
@@ -529,8 +631,8 @@ def run_hermes_task(
             if elapsed >= max_seconds:
                 timed_out = True
                 stop_result = stop_run(base_url, api_key, run_id)
-                for _ in range(5):
-                    time.sleep(1)
+                for _ in range(20):
+                    time.sleep(2)
                     try:
                         final_status = poll_run(base_url, api_key, run_id)
                     except Exception as exc:
@@ -610,10 +712,14 @@ def verify_project(task: StressTask, project_root: Path, timeout: int) -> dict[s
     ]
     tests = count_tests(project_root)
     for item in command_results:
-        item["zero_tests_detected"] = independent_zero_tests_detected(
-            str(item.get("command") or ""),
-            str(item.get("output_tail") or ""),
-            tests,
+        item["zero_tests_detected"] = (
+            item.get("exit_code") == 0
+            and not item.get("timed_out")
+            and independent_zero_tests_detected(
+                str(item.get("command") or ""),
+                str(item.get("output_tail") or ""),
+                tests,
+            )
         )
     return {
         "exists": project_root.exists(),
@@ -626,12 +732,26 @@ def verify_project(task: StressTask, project_root: Path, timeout: int) -> dict[s
     }
 
 
+def _output_reports_positive_tests(output_tail: str) -> bool:
+    patterns = (
+        r"(?m)^#\s*tests\s+([1-9][0-9]*)\s*$",
+        r"\bRan\s+([1-9][0-9]*)\s+tests?\b",
+        r"\bExecuted\s+([1-9][0-9]*)\s+tests?\b",
+        r"(?m)^running\s+([1-9][0-9]*)\s+tests?\s*$",
+        r"\btest result:\s+ok\.\s+([1-9][0-9]*)\s+passed\b",
+        r"\b([1-9][0-9]*)\s+passed\b",
+    )
+    return any(re.search(pattern, output_tail, flags=re.IGNORECASE) for pattern in patterns)
+
+
 def independent_zero_tests_detected(command: str, output_tail: str, test_count: int) -> bool:
     lowered_command = command.lower()
     if not any(marker in lowered_command for marker in ("test", "pytest", "unittest")):
         return False
     if test_count <= 0:
         return True
+    if _output_reports_positive_tests(output_tail):
+        return False
     lowered_output = output_tail.lower()
     patterns = (
         r"\bran 0 tests\b",
@@ -640,6 +760,31 @@ def independent_zero_tests_detected(command: str, output_tail: str, test_count: 
         r"\brunning 0 tests\b",
     )
     return any(re.search(pattern, lowered_output) for pattern in patterns)
+
+
+def verifier_leak_needles(verify_commands: tuple[str, ...]) -> list[str]:
+    needles: set[str] = {cmd.lower() for cmd in verify_commands}
+    for command in verify_commands:
+        lowered = command.lower()
+        if "npm test" in lowered or "npm run test" in lowered:
+            needles.update({"node --test", "vitest", "jest"})
+        if "pnpm" in lowered and "test" in lowered:
+            needles.update({"pnpm test", "pnpm run test", "vitest", "jest"})
+        if "yarn" in lowered and "test" in lowered:
+            needles.update({"yarn test", "vitest", "jest"})
+        if "bun" in lowered and "test" in lowered:
+            needles.update({"bun test"})
+        if "swift test" in lowered:
+            needles.add("swift test")
+        if "cargo test" in lowered:
+            needles.add("cargo test")
+        if "go test" in lowered:
+            needles.update({"go test", "go build", "go vet"})
+        if "unittest" in lowered:
+            needles.update({"python -m unittest", "python3 -m unittest"})
+        if "pytest" in lowered:
+            needles.update({"pytest", "python -m pytest", "python3 -m pytest", "uv run pytest"})
+    return sorted(needles)
 
 
 def count_tests(project_root: Path) -> int:
@@ -679,7 +824,7 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
     budget_before_first_verify = 0
     first_verify_seen = False
 
-    verify_needles = [cmd.lower() for cmd in verify_commands]
+    verify_needles = verifier_leak_needles(verify_commands)
     for event in events:
         if isinstance(event.get("timestamp"), (int, float)):
             event_times.append(float(event["timestamp"]))
@@ -872,7 +1017,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-file", default=os.environ.get("HERMES_ENV_FILE", str(Path.home() / ".hermes" / ".env")))
     parser.add_argument("--workspace", default="")
     parser.add_argument("--output", default="")
-    parser.add_argument("--prompt-mode", choices=("kernel", "giant"), default="kernel")
+    parser.add_argument("--prompt-mode", choices=("probe", "kernel", "giant"), default="kernel")
     catalog = _task_catalog("kernel")
     parser.add_argument("--tasks", default=",".join(catalog), help=f"Comma-separated tasks: {', '.join(catalog)}")
     parser.add_argument("--max-run-seconds", type=int, default=900)

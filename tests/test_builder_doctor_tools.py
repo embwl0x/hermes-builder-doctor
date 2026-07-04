@@ -131,6 +131,22 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertEqual(block["action"], "block")
         self.assertIn("write budget", block["message"])
 
+    def test_builder_budget_hard_stops_at_language_source_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "go.mod").write_text("module example.com/cap\n\ngo 1.22\n", encoding="utf-8")
+            for index in range(5):
+                (root / f"file{index}.go").write_text("package cap\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+
+            result = json.loads(self.tools.builder_budget({"project_path": str(root)}))
+            state = json.loads((root / ".hermes-builder" / "state.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(result["over_budget"])
+        self.assertTrue(result["hard_stop"])
+        self.assertIn("builder_verify", result["allowed_next_tools"])
+        self.assertTrue(state["guard"]["verify_required"])
+
     def test_builder_verify_success_requires_receipt_and_blocks_raw_verifier(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -162,6 +178,14 @@ class BuilderDoctorToolTests(unittest.TestCase):
                 tool_name="terminal",
                 args={"command": "python3 -m compileall -q .", "workdir": str(root)},
             )
+            node_terminal_block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={"command": "node --test", "workdir": str(root)},
+            )
+            go_terminal_block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={"command": "go build ./...", "workdir": str(root)},
+            )
 
             receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
             write_after_receipt = self.tools.builder_pre_tool_call(
@@ -177,8 +201,68 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIn("builder_verify has already passed", write_block["message"])
         self.assertIsNotNone(terminal_block)
         self.assertIn("raw terminal verifier", terminal_block["message"])
+        self.assertIsNotNone(node_terminal_block)
+        self.assertIn("raw terminal verifier", node_terminal_block["message"])
+        self.assertIsNotNone(go_terminal_block)
+        self.assertIn("raw terminal verifier", go_terminal_block["message"])
         self.assertTrue(receipt["state_recorded"])
         self.assertIsNone(write_after_receipt)
+
+    def test_terminal_raw_verifier_is_blocked_even_without_root_detection(self) -> None:
+        build_block = self.tools.builder_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "go build ./..."},
+        )
+        tidy_block = self.tools.builder_pre_tool_call(
+            tool_name="terminal",
+            args={"command": "go mod tidy"},
+        )
+
+        self.assertIsNotNone(build_block)
+        self.assertIn("raw terminal verifier", build_block["message"])
+        self.assertIsNotNone(tidy_block)
+        self.assertIn("terminal file mutation", tidy_block["message"])
+
+    def test_builder_budget_after_passing_verify_requires_receipt_even_without_after_verify_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+            self.tools.builder_verify(
+                {
+                    "project_path": str(root),
+                    "commands": ["python3 -m compileall -q ."],
+                }
+            )
+
+            budget = json.loads(self.tools.builder_budget({"project_path": str(root)}))
+            state = json.loads((root / ".hermes-builder" / "state.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(budget["allowed_next_tools"], ["builder_resume", "builder_receipt"])
+        self.assertTrue(state["guard"]["receipt_required"])
+        self.assertTrue(any("builder_receipt" in action for action in budget["actions"]))
+
+    def test_builder_budget_does_not_reprompt_receipt_after_current_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+            self.tools.builder_verify(
+                {
+                    "project_path": str(root),
+                    "commands": ["python3 -m compileall -q ."],
+                }
+            )
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            self.tools.builder_receipt({"project_path": str(root)})
+
+            budget = json.loads(self.tools.builder_budget({"project_path": str(root)}))
+
+        self.assertEqual(
+            budget["allowed_next_tools"],
+            ["write_file", "patch", "builder_budget", "builder_verify"],
+        )
+        self.assertFalse(any("builder_receipt now" in action for action in budget["actions"]))
 
     def test_failed_verify_allows_two_repair_patches_then_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
