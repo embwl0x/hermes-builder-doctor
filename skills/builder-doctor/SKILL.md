@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.5.5
+version: 0.5.6
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -34,6 +34,8 @@ metadata:
 
 Use the builder toolkit to make complex builds incremental, resumable, and verifiable.
 For non-trivial software build prompts, this is the natural default workflow, even if the user does not name the skill or tools.
+Builder Doctor also installs Hermes hooks that enforce this flow inside projects
+marked by `.hermes-builder/state.json`.
 
 ## When to use
 
@@ -89,7 +91,7 @@ Call `builder_plan` before large builds. Include the user's objective. Follow th
 - avoid unrelated rewrites
 
 Hard gate for large builds:
-- After 4 file writes/patches in a phase, stop adding features and verify.
+- After three `write_file`/`patch` calls in a phase, stop adding features and verify.
 - Before writing source in a new language lane, choose the project identity and
   keep it stable: Node package type/import style, Swift target/product names,
   Python import root, Rust crate/module names, and Go package name per
@@ -152,11 +154,11 @@ After each fix, run only the relevant script again. Do not run the full suite un
 Verification discipline:
 - Once `builder_verify` has been used for a project, continue verification through `builder_verify`; do not switch to the raw terminal for the same test/build/check command.
 - Use raw terminal only for bounded setup/introspection that `builder_verify` is not meant to do, such as creating the initial project folder, listing files, or reading command availability.
-- When `builder_verify` succeeds, do not rerun the same command through raw terminal for reassurance. Call `builder_resume`, `builder_budget` with `after_verify: true`, then `builder_receipt`.
+- When `builder_verify` succeeds, it records the verification automatically. Do not rerun the same command through raw terminal for reassurance. Call `builder_resume` only if checkpoint notes are needed, then `builder_budget` with `after_verify: true`, then `builder_receipt`.
 - If `builder_verify` fails twice on the same command, call `builder_doctor`, read the first structured diagnostic, patch one cause, and rerun `builder_verify` once.
 - If a repair needs more than two patches before verification, stop patching and rerun `builder_verify` or produce `builder_receipt` with the remaining failure.
 - If a terminal tool guardrail fires during verification, do not repeat the terminal command. Switch back to `builder_verify`, checkpoint with `builder_resume`, or finish with `builder_receipt`.
-- Record every successful verification in `builder_resume` before the final receipt.
+- Let `builder_verify` record successful verification automatically; use `builder_resume` for objective, phase, decisions, deferred layers, and any manual verification notes.
 - If the build has gone more than one tool cycle without visible verification after several writes, shrink scope immediately instead of continuing broad file creation.
 - If you feel the project needs more than 10-12 files, split it into stage 1 kernel, stage 2 hardening, and stage 3 integrations; only build the current stage.
 
@@ -254,9 +256,9 @@ Inputs:
 - `project_path` (string, required)
 - `phase` (string, optional)
 - `after_verify` (bool, optional, default `false`)
-- `max_source_files` (integer, optional, default `8`)
-- `max_test_files` (integer, optional, default `4`)
-- `max_source_dirs` (integer, optional, default `4`)
+- `max_source_files` (integer, optional; if omitted, Builder Doctor uses language-specific staged-kernel defaults)
+- `max_test_files` (integer, optional; if omitted, Builder Doctor uses language-specific staged-kernel defaults)
+- `max_source_dirs` (integer, optional; if omitted, Builder Doctor uses language-specific staged-kernel defaults)
 
 Returns JSON:
 - `success` (bool)
@@ -269,6 +271,7 @@ Returns JSON:
 - `allowed_next_tools` (array of permitted next tool names)
 - `issues` (array with budget or mixed-package warnings)
 - `actions` (array of next-step guidance)
+- `enforcement` (object with write counters, verify/receipt gates, and repair-patch allowance)
 
 ### builder_plan
 
@@ -282,6 +285,8 @@ Returns JSON:
 - `project_path` (string)
 - `objective` (string)
 - `summary` (string)
+- `state_recorded` (bool; true when verification was written to `.hermes-builder/state.json`)
+- `state_warning` (string)
 - `project_signals` (object)
 - `phases` (array with phase gates)
 - `rules` (array of strings)
@@ -345,4 +350,4 @@ Returns JSON:
 - Do not use `swift run` as verification for GUI/game apps; prefer `swift build` and `swift test`.
 - Do not skip `builder_resume` during a long build.
 - Do not skip `builder_receipt` before final response.
-- Do not edit project files through `builder_map`, `builder_doctor`, `builder_plan`, or `builder_receipt`; only `builder_resume` writes state.
+- Do not edit project source files through `builder_map`, `builder_doctor`, `builder_plan`, or `builder_receipt`; Builder Doctor tools may write only their project-local `.hermes-builder/state.json`.
