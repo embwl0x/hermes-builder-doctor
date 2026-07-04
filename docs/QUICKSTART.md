@@ -107,12 +107,19 @@ Expected behavior:
 After the tools are visible in Hermes, run disposable stress tests:
 
 ```bash
+export HERMES_BASE_URL="http://127.0.0.1:8644"  # replace with your Hermes api_server URL
+export HERMES_MODEL="your-local-model-alias"    # replace with a model listed by that gateway
+
 ./scripts/stress_hermes_builds.py \
-  --base-url http://127.0.0.1:8644 \
-  --model your-local-model-alias \
+  --base-url "$HERMES_BASE_URL" \
+  --model "$HERMES_MODEL" \
   --prompt-mode probe \
   --tasks node,python,go
 ```
+
+`127.0.0.1:8644` is only a local default. If your Hermes gateway is configured
+on another host or port, use that URL instead.
+`your-local-model-alias` must be the model ID exposed by that gateway.
 
 The harness creates temporary projects, watches Hermes tool events,
 independently verifies the generated code, writes a JSON report, and deletes

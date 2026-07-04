@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 import importlib.util
+import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -193,6 +196,32 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
         self.assertTrue(result["timed_out"])
         self.assertFalse(result["cleanup_safe"])
         self.assertEqual(result["status"], "running")
+
+    def test_parse_args_requires_model_without_env_default(self) -> None:
+        module = load_stress_module()
+
+        with mock.patch.object(sys, "argv", ["stress_hermes_builds.py"]), \
+                mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(sys, "stderr", io.StringIO()):
+            with self.assertRaises(SystemExit):
+                module.parse_args()
+
+    def test_parse_args_uses_model_and_base_url_environment(self) -> None:
+        module = load_stress_module()
+
+        with mock.patch.object(sys, "argv", ["stress_hermes_builds.py"]), \
+                mock.patch.dict(
+                    os.environ,
+                    {
+                        "HERMES_MODEL": "my-local-model",
+                        "HERMES_BASE_URL": "http://hermes.example.local:9999",
+                    },
+                    clear=True,
+                ):
+            args = module.parse_args()
+
+        self.assertEqual(args.model, "my-local-model")
+        self.assertEqual(args.base_url, "http://hermes.example.local:9999")
 
 
 if __name__ == "__main__":

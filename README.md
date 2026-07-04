@@ -96,11 +96,21 @@ After installing into a Hermes agent, you can run disposable build stress tests
 against that agent:
 
 ```bash
-API_SERVER_KEY=... ./scripts/stress_hermes_builds.py \
-  --base-url http://127.0.0.1:8644 \
-  --model your-local-model-alias \
+export HERMES_BASE_URL="http://127.0.0.1:8644"  # replace with your Hermes api_server URL
+export HERMES_MODEL="your-local-model-alias"    # replace with a model listed by that gateway
+export API_SERVER_KEY="..."                     # only if your gateway requires it
+
+./scripts/stress_hermes_builds.py \
+  --base-url "$HERMES_BASE_URL" \
+  --model "$HERMES_MODEL" \
   --tasks node,python,go
 ```
+
+`127.0.0.1:8644` is only the common local default. Use the host and port from
+the target agent's `platforms.api_server.extra.host` / `port` configuration, or
+any remote/Tailscale URL that reaches that Hermes gateway.
+`your-local-model-alias` must be the model name exposed by that gateway; the
+harness no longer assumes a project-specific default model.
 
 Use `--prompt-mode giant` to test whether an intentionally over-scoped product
 prompt is converted into staged verified layers instead of a one-shot build.

@@ -1066,8 +1066,16 @@ def run_task(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--base-url", default=os.environ.get("HERMES_BASE_URL", "http://127.0.0.1:8644"))
-    parser.add_argument("--model", default=os.environ.get("HERMES_MODEL", "step-3.7-flash"))
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("HERMES_BASE_URL", "http://127.0.0.1:8644"),
+        help="Hermes api_server base URL. Defaults to HERMES_BASE_URL or the local default http://127.0.0.1:8644.",
+    )
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("HERMES_MODEL", ""),
+        help="Model alias exposed by the target Hermes gateway. Can also be set with HERMES_MODEL.",
+    )
     parser.add_argument("--env-file", default=os.environ.get("HERMES_ENV_FILE", str(Path.home() / ".hermes" / ".env")))
     parser.add_argument("--workspace", default="")
     parser.add_argument("--output", default="")
@@ -1079,7 +1087,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repairs", type=int, default=1)
     parser.add_argument("--keep-projects", action="store_true")
     parser.add_argument("--quiet-tools", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not str(args.model).strip():
+        parser.error("--model is required unless HERMES_MODEL is set")
+    return args
 
 
 def main() -> int:

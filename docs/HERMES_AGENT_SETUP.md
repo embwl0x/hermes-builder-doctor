@@ -156,11 +156,20 @@ Expected behavior:
 For a repeatable check, run the bundled stress harness from this repository:
 
 ```bash
+export HERMES_BASE_URL="http://127.0.0.1:8644"  # replace with the target agent api_server URL
+export HERMES_MODEL="your-local-model-alias"    # replace with a model listed by that gateway
+
 ./scripts/stress_hermes_builds.py \
-  --base-url http://127.0.0.1:8644 \
-  --model your-local-model-alias \
+  --base-url "$HERMES_BASE_URL" \
+  --model "$HERMES_MODEL" \
   --tasks node,python,go
 ```
+
+`127.0.0.1:8644` is only the common local default. For another Hermes agent,
+use that agent's configured `platforms.api_server.extra.host` and `port`, or the
+reachable remote URL if the gateway is exposed through SSH, Tailscale, or a
+reverse proxy.
+`your-local-model-alias` must be a model ID exposed by the target gateway.
 
 If `API_SERVER_KEY` is not already exported, the harness tries to read
 `$HOME/.hermes/.env`. You can also point it at a different env file:
