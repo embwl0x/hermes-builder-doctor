@@ -58,5 +58,7 @@ builder_resume and builder_receipt.
 - SwiftPM: verify with `swift build` and `swift test`.
 - Python: prefer `uv run pytest` or compileall for no-test projects.
 - Rust: verify with `cargo test`; compile-only checks such as `cargo check`
-  are not enough to receipt a completed stage.
+  are not enough to receipt a completed stage. Targeted commands such as
+  `cargo test test_name` are diagnostic only; finish with full `cargo test`
+  before `builder_receipt`.
 - Go: use one package name per directory and verify with `go test ./...`.

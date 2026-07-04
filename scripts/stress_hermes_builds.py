@@ -175,7 +175,9 @@ then map, plan, run a diagnostic scan, budget, verify, checkpoint, and receipt.
 Keep the slice compact:
 Cargo.toml library package, a retry-budget state machine, useful Display
 errors, and unit tests for consume, reset, exhaustion, and invalid budgets.
-Verify it and finish with a concise handoff. Do not add external crates.
+Prefer one `src/lib.rs` with inline unit tests for the first verified slice.
+Verify with full `cargo test` and finish with a concise handoff. Do not add
+external crates.
 """,
         ),
         "go": StressTask(
@@ -322,18 +324,20 @@ after successful builder_verify.
 Build stage 1 of a deterministic workflow scheduler using only Rust standard
 library dependencies. Stage 1 must include:
 - Cargo.toml library package.
-- DAG model with cycle detection, stable topological ordering, resource locks,
-  retry budgets, and cancellation propagation.
-- Scheduler that returns deterministic runnable batches and records a replay
-  trace.
+- Keep the first verified slice compact: prefer one `src/lib.rs` plus inline
+  `#[cfg(test)]` tests before splitting into multiple modules.
+- DAG model with cycle detection and stable topological ordering.
+- Scheduler that returns deterministic runnable batches and enforces retry
+  budgets.
 - Error types with useful Display output.
-- Unit tests covering cycle detection, batch ordering, locks, retries,
-  cancellation propagation, replay trace stability, and invalid dependency
-  handling.
+- Unit tests covering cycle detection, batch ordering, retry exhaustion, and
+  invalid dependency handling.
 
 Keep this as a verified kernel, not a distributed executor. Defer async runtime,
 database, HTTP API, and worker pool integration in builder_resume/receipt.
-After the first builder_verify call, fix only verification failures.
+After the first builder_verify call, fix only verification failures. Targeted
+`cargo test name` commands are diagnostic only; final verification must include
+full `cargo test` before builder_receipt.
 """,
         ),
         "go": StressTask(
@@ -459,7 +463,10 @@ format, worker protocol abstraction, policy engine, CLI boundary, and future
 HTTP/runtime integration. Use only Rust standard library dependencies.
 
 For this run, prove the orchestration kernel with a verified layer that can
-support the larger product and records the rest as deferred layers.
+support the larger product and records the rest as deferred layers. Keep the
+first Rust layer to one crate and the fewest modules possible; targeted
+`cargo test name` commands are diagnostic only, and final verification must
+include full `cargo test` before builder_receipt.
 """,
         ),
         "go": StressTask(
@@ -878,6 +885,38 @@ def usage_from_run(run: dict[str, Any]) -> dict[str, int]:
     }
 
 
+def model_transport_issue(run: dict[str, Any]) -> bool:
+    payload = json.dumps(run.get("status_payload") or {}, ensure_ascii=True)
+    stream_errors = " ".join(str(item) for item in run.get("stream_errors") or [])
+    combined = f"{payload}\n{stream_errors}"
+    markers = (
+        "No user query found in messages",
+        "empty stream with no finish_reason",
+        "HTTP 404",
+        "run_not_found",
+    )
+    return any(marker in combined for marker in markers)
+
+
+def estimated_output_tokens_from_stream(run: dict[str, Any]) -> int:
+    text = "".join(
+        str(event.get("delta") or "")
+        for event in run.get("events") or []
+        if event.get("event") == "message.delta"
+    )
+    return int(len(text) / 4) if text else 0
+
+
+def output_tokens_for_rate(run: dict[str, Any]) -> tuple[int, str]:
+    usage = usage_from_run(run)
+    if usage["output_tokens"] > 0:
+        return usage["output_tokens"], "api"
+    estimated = estimated_output_tokens_from_stream(run)
+    if estimated > 0:
+        return estimated, "stream_estimate"
+    return 0, "none"
+
+
 def make_repair_prompt(project_root: Path, verification: dict[str, Any]) -> str:
     failed = [item for item in verification.get("commands", []) if item.get("exit_code") != 0]
     tail = "\n\n".join(
@@ -892,6 +931,9 @@ builder_failure_plan on the failed verifier output before patching, patch only
 the first concrete verification failure, rerun builder_verify with the same
 verification command, update builder_resume, call builder_budget, and finish
 with builder_receipt. Do not add new features.
+
+For Rust, targeted `cargo test some_name` commands are diagnostic only. The
+final verification gate must include full `cargo test` before builder_receipt.
 
 Independent verification failed:
 
@@ -956,7 +998,15 @@ def run_task(
         repair_usage = usage_from_run(repair_run)
         usage = {key: usage.get(key, 0) + repair_usage.get(key, 0) for key in usage}
     wall = run["wall_seconds"] + sum(item["wall_seconds"] for item in repair_runs)
-    output_tps = round(usage["output_tokens"] / wall, 3) if wall > 0 else 0.0
+    rate_tokens = 0
+    rate_sources: list[str] = []
+    for item in [run] + repair_runs:
+        tokens, source = output_tokens_for_rate(item)
+        rate_tokens += tokens
+        if source not in rate_sources:
+            rate_sources.append(source)
+    output_tps = round(rate_tokens / wall, 3) if wall > 0 else 0.0
+    transport_issue = model_transport_issue(run) or any(model_transport_issue(item) for item in repair_runs)
 
     deleted = False
     cleanup_skipped_reason = ""
@@ -981,6 +1031,8 @@ def run_task(
         "usage": usage,
         "combined_wall_seconds": round(wall, 3),
         "output_tokens_per_second_wall": output_tps,
+        "output_token_rate_source": "+".join(rate_sources) if rate_sources else "none",
+        "model_transport_issue": transport_issue,
         "deleted": deleted,
         "cleanup_safe": cleanup_safe,
         "cleanup_skipped_reason": cleanup_skipped_reason,
@@ -996,6 +1048,8 @@ def run_task(
                 "files": verification["source_file_count"],
                 "wall_s": result["combined_wall_seconds"],
                 "out_tok_s": output_tps,
+                "tok_source": result["output_token_rate_source"],
+                "transport_issue": transport_issue,
                 "missing_tools": event_summary["required_tools_missing"],
                 "terminal_verify_leaks": bool(event_summary["terminal_verify_leaks"]),
                 "staging": event_summary["staging"],

@@ -198,6 +198,8 @@ Rust/Cargo repair loop:
 - `cargo check`, `cargo build`, and `cargo clippy` are compile checks, not final
   behavior verification. For Rust projects, Builder Doctor adds `cargo test`
   when those commands are used without a test gate.
+- Targeted commands such as `cargo test test_name` are diagnostic only. Before
+  `builder_receipt`, run full `cargo test` through `builder_verify`.
 - Patch the first Rust compiler diagnostic before moving to later diagnostics.
 - For failed tests, read the failing test and implementation, then patch behavior rather than weakening assertions.
 - Do not run `cargo add`, `cargo install`, `cargo update`, or `cargo run` through `builder_verify`.

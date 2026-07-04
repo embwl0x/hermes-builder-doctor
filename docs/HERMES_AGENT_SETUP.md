@@ -3,10 +3,7 @@
 This guide is for installing Builder Doctor into another Hermes agent, including
 agents backed by smaller local models.
 
-The repository is private right now. The person installing it needs GitHub
-access to the repository before they can clone it.
-
-## 1. Download From The Private Repo
+## 1. Download The Repository
 
 Using GitHub CLI:
 
@@ -16,7 +13,7 @@ gh repo clone embwl0x/hermes-builder-doctor
 cd hermes-builder-doctor
 ```
 
-Using SSH, if the account already has repo access:
+Using SSH:
 
 ```bash
 git clone git@github.com:embwl0x/hermes-builder-doctor.git

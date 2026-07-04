@@ -81,6 +81,33 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
         self.assertEqual(summary["terminal_verify_leaks"], ["node --test"])
 
+    def test_transport_issue_and_stream_token_estimate_are_reported(self) -> None:
+        module = load_stress_module()
+        run = {
+            "status": "failed",
+            "status_payload": {"error": 'HTTP 404: {"error": "No user query found in messages."}'},
+            "events": [
+                {"event": "message.delta", "delta": "abcd" * 10},
+                {"event": "message.delta", "delta": "efgh" * 10},
+            ],
+            "stream_errors": [],
+        }
+
+        self.assertTrue(module.model_transport_issue(run))
+        self.assertTrue(
+            module.model_transport_issue(
+                {
+                    "status_payload": {
+                        "error": "Provider returned an empty stream with no finish_reason",
+                    }
+                }
+            )
+        )
+        tokens, source = module.output_tokens_for_rate(run)
+
+        self.assertEqual(tokens, 20)
+        self.assertEqual(source, "stream_estimate")
+
     def test_timeout_stops_active_run_before_return(self) -> None:
         module = load_stress_module()
         stopped: list[str] = []

@@ -1507,6 +1507,63 @@ def _default_verify_commands(root: Path, pkg: Dict[str, Any], scripts: Dict[str,
     return []
 
 
+def _cargo_test_args(command: str) -> Optional[List[str]]:
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        tokens = command.split()
+    for index in range(len(tokens) - 1):
+        if tokens[index] == "cargo" and tokens[index + 1] == "test":
+            return tokens[index + 2:]
+    return None
+
+
+def _is_full_cargo_test_command(command: str) -> bool:
+    args = _cargo_test_args(command)
+    if args is None:
+        return False
+
+    target_selectors = {
+        "--bench",
+        "--bin",
+        "--example",
+        "--lib",
+        "--package",
+        "--test",
+        "-p",
+    }
+    value_flags = {
+        "--color",
+        "--config",
+        "--features",
+        "--jobs",
+        "--manifest-path",
+        "--message-format",
+        "--profile",
+        "--target",
+        "--target-dir",
+        "-j",
+    }
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            return True
+        if arg in target_selectors or any(arg.startswith(f"{selector}=") for selector in target_selectors):
+            return False
+        if arg in value_flags:
+            index += 2
+            continue
+        if any(arg.startswith(f"{flag}=") for flag in value_flags):
+            index += 1
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        return False
+    return True
+
+
 def _ensure_required_verify_commands(root: Path, commands: List[str]) -> List[str]:
     profile = _detect_language_profile(root)
     normalized = list(commands)
@@ -1516,8 +1573,9 @@ def _ensure_required_verify_commands(root: Path, commands: List[str]) -> List[st
             re.search(r"\bcargo\s+(?:check|build|clippy)\b", command)
             for command in normalized
         )
-        has_cargo_test = any(re.search(r"\bcargo\s+test\b", command) for command in normalized)
-        if has_cargo_compile_check and not has_cargo_test:
+        has_cargo_test = any(_cargo_test_args(command) is not None for command in normalized)
+        has_full_cargo_test = any(_is_full_cargo_test_command(command) for command in normalized)
+        if (has_cargo_compile_check or has_cargo_test) and not has_full_cargo_test:
             normalized.append("cargo test")
 
     return normalized

@@ -333,6 +333,30 @@ class BuilderDoctorToolTests(unittest.TestCase):
 
         self.assertEqual(commands, ["cargo check", "cargo test"])
 
+    def test_rust_targeted_test_verifier_gets_full_cargo_test_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                "[package]\nname = \"targeted-only\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                encoding="utf-8",
+            )
+            filtered = self.tools._ensure_required_verify_commands(
+                root,
+                ["cargo test test_resource_locks -- --nocapture"],
+            )
+            target = self.tools._ensure_required_verify_commands(
+                root,
+                ["cargo test --test integration_tests"],
+            )
+            full = self.tools._ensure_required_verify_commands(
+                root,
+                ["cargo test -- --nocapture"],
+            )
+
+        self.assertEqual(filtered, ["cargo test test_resource_locks -- --nocapture", "cargo test"])
+        self.assertEqual(target, ["cargo test --test integration_tests", "cargo test"])
+        self.assertEqual(full, ["cargo test -- --nocapture"])
+
     def test_zero_test_outputs_are_not_successful_verification(self) -> None:
         node_output = "TAP version 13\n1..0\n# tests 0\n# pass 0\n"
         cargo_output = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n\nrunning 0 tests\n"

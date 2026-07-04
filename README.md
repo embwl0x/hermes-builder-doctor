@@ -49,8 +49,7 @@ tests/                      Standard-library smoke tests
 
 ## Quick Install
 
-Because this repository is private right now, first clone it with an authorized
-GitHub account:
+Clone the public repository:
 
 ```bash
 gh repo clone embwl0x/hermes-builder-doctor
@@ -68,8 +67,8 @@ Then restart Hermes or its gateway so the plugin and skill are reloaded.
 Optional: copy the ideas from `examples/` into your own Hermes config or agent
 soul files. Do not paste examples blindly over an existing production config.
 
-See `docs/HERMES_AGENT_SETUP.md` for private-repo cloning, custom Hermes homes,
-force installs with backups, and smaller local model prompt guidance.
+See `docs/HERMES_AGENT_SETUP.md` for clone options, custom Hermes homes, force
+installs with backups, and smaller local model prompt guidance.
 
 ## Test
 
@@ -118,6 +117,8 @@ and only deletes generated projects after Hermes reports a terminal run status.
   until a failure plan is recorded.
 - For Rust projects, compile-only verification such as `cargo check` is paired
   with `cargo test` so a completed stage cannot receipt without the test gate.
+- Targeted Rust repair commands such as `cargo test test_name` are treated as
+  diagnostics; Builder Doctor requires full `cargo test` before final receipt.
 - After `builder_map` marks a project, Builder Doctor's hooks enforce staged
   build flow only inside that project's `.hermes-builder/state.json` boundary
   and block identifiable write/patch/terminal work outside the mapped root.
