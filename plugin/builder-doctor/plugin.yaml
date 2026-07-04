@@ -1,0 +1,22 @@
+name: builder-doctor
+kind: standalone
+version: 0.5.4
+description: >
+  Default guardrail tools for substantial software builds. Agents should use
+  these naturally for app/project creation, repair, refactors, and verification:
+  map first, plan second, verify instead of ad hoc test loops, checkpoint long
+  work, and produce a receipt before the final answer. Includes SwiftPM/XCTest
+  mapping and verification guidance for macOS/Swift builds, plus Python/uv/pytest
+  mapping and verification guidance for Python projects, Rust/Cargo packages,
+  Go modules, and manager-aware Node/TypeScript projects. Complex-build plans
+  use smaller verification batches and staged verified kernels so local models
+  do not write large projects in one silent burst before testing, with stronger
+  language identity checks such as one Go package per directory.
+author: Hermes Builder Doctor Contributors
+provides_tools:
+  - builder_map
+  - builder_doctor
+  - builder_plan
+  - builder_resume
+  - builder_verify
+  - builder_receipt

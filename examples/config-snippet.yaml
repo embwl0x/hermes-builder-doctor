@@ -1,0 +1,20 @@
+# Optional generic Hermes guidance snippet.
+# Merge ideas from this file into your own config; do not overwrite production
+# config blindly.
+
+agent:
+  environment_hint: >
+    For substantial software builds, use the builder-doctor toolset naturally:
+    builder_map before broad edits, builder_plan for phased work,
+    builder_resume at phase boundaries, builder_verify for bounded checks, and
+    builder_receipt before final handoff. Build super-complex requests as
+    staged verified kernels instead of one large burst.
+
+platform_hints:
+  api_server:
+    append: >
+      For non-trivial app/project creation, repair, refactor, test, or
+      verification requests, use builder-doctor. Create only the project root
+      first for new projects, then map and plan before writing broad source
+      batches. Use builder_verify for build/test/check commands rather than
+      repeated ad hoc terminal loops.

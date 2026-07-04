@@ -1,0 +1,13 @@
+[project]
+name = "hermes-builder-doctor"
+version = "0.5.4"
+description = "Generic Hermes builder guardrail tools for local coding models"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+  { name = "Hermes Builder Doctor Contributors" }
+]
+
+[tool.ruff]
+line-length = 100
