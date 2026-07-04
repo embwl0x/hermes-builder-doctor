@@ -14,6 +14,11 @@ It should not contain:
 
 The package includes generic tool code, skill instructions, and examples only.
 
+The plugin stores per-project state in `.hermes-builder/state.json` inside the
+project being built. That file records compact build flow metadata such as tool
+gates, verification commands, touched files, and receipt status. It should not
+store credentials, raw logs, or model transcripts.
+
 ## Before Publishing Publicly
 
 Run:

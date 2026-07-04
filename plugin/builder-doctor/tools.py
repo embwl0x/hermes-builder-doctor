@@ -809,6 +809,38 @@ def _state_path(root: Path) -> Path:
     return root / ".hermes-builder" / "state.json"
 
 
+def _default_guard() -> Dict[str, Any]:
+    return {
+        "builder_verify_used": False,
+        "last_verify_success": None,
+        "last_verify_at": "",
+        "last_verify_commands": [],
+        "writes_since_budget": 0,
+        "writes_since_verify": 0,
+        "repair_patches_remaining": None,
+        "verify_required": False,
+        "receipt_required": False,
+        "last_budget_at": "",
+        "last_budget_after_verify": False,
+        "last_receipt_at": "",
+        "language_profile": "unknown",
+    }
+
+
+def _guard_from_state(state: Dict[str, Any]) -> Dict[str, Any]:
+    guard = state.get("guard")
+    merged = _default_guard()
+    if isinstance(guard, dict):
+        merged.update(guard)
+    return merged
+
+
+def _save_state(root: Path, state: Dict[str, Any]) -> None:
+    state["project_path"] = str(root)
+    state["updated_at"] = _now_iso()
+    _write_json(_state_path(root), state)
+
+
 def _default_state(root: Path) -> Dict[str, Any]:
     now = _now_iso()
     return {
@@ -823,6 +855,7 @@ def _default_state(root: Path) -> Dict[str, Any]:
         "files_touched": [],
         "verification": [],
         "notes": [],
+        "guard": _default_guard(),
         "created_at": now,
         "updated_at": now,
     }
@@ -834,7 +867,268 @@ def _load_state(root: Path) -> Dict[str, Any]:
         return _default_state(root)
     base = _default_state(root)
     base.update(state)
+    base["guard"] = _guard_from_state(base)
     return base
+
+
+def _detect_language_profile(root: Path) -> str:
+    if (root / "Package.swift").exists():
+        return "swift"
+    if (root / "Cargo.toml").exists():
+        return "rust"
+    if (root / "go.mod").exists():
+        return "go"
+    if _python_project_info(root).get("is_python_project"):
+        return "python"
+    if (root / "package.json").exists():
+        return "node"
+    return "unknown"
+
+
+def _language_budget_defaults(root: Path) -> Dict[str, int]:
+    profile = _detect_language_profile(root)
+    defaults = {
+        "node": {"max_source_files": 3, "max_test_files": 2, "max_source_dirs": 3},
+        "swift": {"max_source_files": 6, "max_test_files": 3, "max_source_dirs": 3},
+        "python": {"max_source_files": 5, "max_test_files": 3, "max_source_dirs": 3},
+        "rust": {"max_source_files": 4, "max_test_files": 2, "max_source_dirs": 3},
+        "go": {"max_source_files": 5, "max_test_files": 2, "max_source_dirs": 2},
+    }
+    return defaults.get(profile, {"max_source_files": 8, "max_test_files": 4, "max_source_dirs": 4})
+
+
+def _expand_tool_path(raw: Any, base: Optional[Path] = None) -> Optional[Path]:
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            root = base or Path(os.getenv("TERMINAL_CWD") or os.getcwd()).expanduser()
+            path = root / path
+        return path.resolve()
+    except Exception:
+        return None
+
+
+def _patch_file_candidates(patch_text: Any) -> List[str]:
+    if not isinstance(patch_text, str):
+        return []
+    candidates: List[str] = []
+    patterns = (
+        r"^\*\*\*\s+(?:Add|Update|Delete) File:\s+(.+?)\s*$",
+        r"^\*\*\*\s+Move to:\s+(.+?)\s*$",
+        r"^(?:---|\+\+\+)\s+(?:[ab]/)?(.+?)\s*$",
+    )
+    for line in patch_text.splitlines():
+        for pattern in patterns:
+            match = re.match(pattern, line)
+            if not match:
+                continue
+            value = match.group(1).strip()
+            if value and value != "/dev/null":
+                candidates.append(value)
+            break
+    return candidates
+
+
+def _find_builder_root(path: Path) -> Optional[Path]:
+    start = path if path.is_dir() else path.parent
+    for candidate in (start, *start.parents):
+        if _state_path(candidate).exists():
+            return candidate
+    return None
+
+
+def _root_from_tool_args(tool_name: str, args: Any) -> Optional[Path]:
+    if not isinstance(args, dict):
+        return None
+
+    explicit = _expand_tool_path(args.get("project_path"))
+    if explicit and explicit.is_dir():
+        return explicit
+
+    base = _expand_tool_path(args.get("workdir")) if tool_name == "terminal" else None
+    candidates: List[Path] = []
+    for key in ("path", "file_path", "target"):
+        value = args.get(key)
+        if isinstance(value, str):
+            expanded = _expand_tool_path(value, base=base)
+            if expanded:
+                candidates.append(expanded)
+
+    if tool_name == "patch":
+        for rel in _patch_file_candidates(args.get("patch")):
+            expanded = _expand_tool_path(rel, base=base)
+            if expanded:
+                candidates.append(expanded)
+    elif tool_name == "terminal":
+        workdir = _expand_tool_path(args.get("workdir"))
+        if workdir:
+            candidates.append(workdir)
+        else:
+            cwd = _expand_tool_path(os.getenv("TERMINAL_CWD") or os.getcwd())
+            if cwd:
+                candidates.append(cwd)
+
+    for candidate in candidates:
+        root = _find_builder_root(candidate)
+        if root:
+            return root
+    return None
+
+
+def _is_raw_verifier_command(command: str) -> bool:
+    patterns = [
+        r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|build|lint|typecheck|check)\b",
+        r"\bswift\s+(?:build|test)\b",
+        r"\bcargo\s+(?:test|check|clippy|build)\b",
+        r"\bgo\s+test\b",
+        r"\buv\s+run\s+(?:pytest|python\s+-m\s+pytest|python\s+-m\s+compileall)\b",
+        r"\bpython(?:3)?\s+-m\s+(?:pytest|compileall)\b",
+        r"(^|[;&|]\s*)pytest(?:\s|$)",
+    ]
+    return any(re.search(pattern, command) for pattern in patterns)
+
+
+def _result_has_error(result: Any, status: str = "") -> bool:
+    if status and status not in {"ok", "success"}:
+        return True
+    parsed = result
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except Exception:
+            return False
+    if isinstance(parsed, dict):
+        if parsed.get("error"):
+            return True
+        if parsed.get("success") is False:
+            return True
+    return False
+
+
+def _verification_status(items: List[Any]) -> Optional[bool]:
+    statuses: List[bool] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if "success" in item and isinstance(item.get("success"), bool):
+            statuses.append(bool(item.get("success")))
+            continue
+        if "exit_code" in item:
+            statuses.append(item.get("exit_code") == 0 and not bool(item.get("timed_out")))
+            continue
+        if "failures" in item and isinstance(item.get("failures"), list):
+            statuses.append(len(item.get("failures", [])) == 0)
+    if not statuses:
+        return None
+    return all(statuses)
+
+
+def _write_guard_block(root: Path, state: Dict[str, Any], guard: Dict[str, Any], reason: str, message: str) -> Dict[str, str]:
+    guard["last_block_reason"] = reason
+    guard["last_block_at"] = _now_iso()
+    state["guard"] = guard
+    try:
+        _save_state(root, state)
+    except Exception:
+        pass
+    return {"action": "block", "message": message}
+
+
+def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Optional[Dict[str, str]]:
+    """Hermes pre_tool_call hook that enforces Builder Doctor staging."""
+    if tool_name not in {"write_file", "patch", "terminal"}:
+        return None
+    root = _root_from_tool_args(tool_name, args)
+    if root is None:
+        return None
+    state = _load_state(root)
+    guard = _guard_from_state(state)
+
+    if tool_name == "terminal":
+        command = str(args.get("command", "")) if isinstance(args, dict) else ""
+        if guard.get("builder_verify_used") and _is_raw_verifier_command(command):
+            return _write_guard_block(
+                root,
+                state,
+                guard,
+                "raw-verifier-blocked",
+                (
+                    "Builder Doctor blocked this raw terminal verifier because this project is already using "
+                    "builder_verify. Call builder_verify with the same bounded command instead, then call "
+                    "builder_resume, builder_budget(after_verify=true), and builder_receipt on success."
+                ),
+            )
+        return None
+
+    if guard.get("receipt_required"):
+        return _write_guard_block(
+            root,
+            state,
+            guard,
+            "receipt-required",
+            (
+                "Builder Doctor blocked another file edit because builder_verify has already passed for this "
+                "stage. Call builder_resume, builder_budget with after_verify=true, and builder_receipt. Put "
+                "extra scope in next_steps instead of widening this stage."
+            ),
+        )
+
+    repair_remaining = guard.get("repair_patches_remaining")
+    if guard.get("last_verify_success") is False and isinstance(repair_remaining, int) and repair_remaining <= 0:
+        guard["verify_required"] = True
+
+    if guard.get("verify_required") or _safe_int(guard.get("writes_since_budget", 0), 0, min_value=0) >= 3:
+        guard["verify_required"] = True
+        return _write_guard_block(
+            root,
+            state,
+            guard,
+            "verify-required",
+            (
+                "Builder Doctor blocked this edit because the current stage has reached its write budget. "
+                "Call builder_budget, then builder_verify with the smallest relevant command before writing more."
+            ),
+        )
+    return None
+
+
+def builder_post_tool_call(
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    status: str = "",
+    **_: Any,
+) -> None:
+    """Hermes post_tool_call hook that updates Builder Doctor write counters."""
+    if tool_name not in {"write_file", "patch"}:
+        return
+    if _result_has_error(result, status=status):
+        return
+    root = _root_from_tool_args(tool_name, args)
+    if root is None:
+        return
+    state = _load_state(root)
+    guard = _guard_from_state(state)
+    guard["writes_since_budget"] = _safe_int(guard.get("writes_since_budget", 0), 0, min_value=0) + 1
+    guard["writes_since_verify"] = _safe_int(guard.get("writes_since_verify", 0), 0, min_value=0) + 1
+    guard["language_profile"] = _detect_language_profile(root)
+
+    repair_remaining = guard.get("repair_patches_remaining")
+    if guard.get("last_verify_success") is False and isinstance(repair_remaining, int):
+        repair_remaining = max(0, repair_remaining - 1)
+        guard["repair_patches_remaining"] = repair_remaining
+        if repair_remaining <= 0:
+            guard["verify_required"] = True
+    elif guard["writes_since_budget"] >= 3:
+        guard["verify_required"] = True
+
+    state["guard"] = guard
+    try:
+        _save_state(root, state)
+    except Exception:
+        pass
 
 
 def _build_project_map(root: Path, max_files: int = 600) -> Dict[str, Any]:
@@ -2050,10 +2344,51 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         next_required.append("Make at most two focused patches before rerunning builder_verify; do not stack broad patch bursts.")
     else:
         next_required.extend([
-            "Record this successful verification with builder_resume.",
+            "builder_verify recorded this verification in .hermes-builder/state.json.",
             "Call builder_budget with after_verify=true before writing more files.",
             "If this is the intended stage, call builder_receipt now instead of rerunning the same command through terminal.",
         ])
+    state_recorded = False
+    state_warning = ""
+    verification_records = [
+        {
+            "command": item.get("command", ""),
+            "exit_code": item.get("exit_code"),
+            "timed_out": bool(item.get("timed_out")),
+            "duration_seconds": item.get("duration_seconds", 0),
+            "success": item.get("exit_code") == 0 and not item.get("timed_out"),
+            "recorded_at": _now_iso(),
+        }
+        for item in results
+        if isinstance(item, dict)
+    ]
+    try:
+        state = _load_state(root)
+        state["verification"] = _append_unique(
+            list(state.get("verification", [])),
+            verification_records,
+            max_items=120,
+        )
+        guard = _guard_from_state(state)
+        guard["builder_verify_used"] = True
+        guard["last_verify_success"] = not any_failure
+        guard["last_verify_at"] = _now_iso()
+        guard["last_verify_commands"] = [str(command) for command in commands]
+        guard["writes_since_budget"] = 0
+        guard["writes_since_verify"] = 0
+        guard["verify_required"] = False
+        guard["language_profile"] = _detect_language_profile(root)
+        if any_failure:
+            guard["receipt_required"] = False
+            guard["repair_patches_remaining"] = 2
+        else:
+            guard["receipt_required"] = True
+            guard["repair_patches_remaining"] = None
+        state["guard"] = guard
+        _save_state(root, state)
+        state_recorded = True
+    except Exception as exc:
+        state_warning = f"Could not update .hermes-builder/state.json: {exc}"
     return _json({
         "success": not any_failure,
         "project_path": project_path,
@@ -2061,6 +2396,8 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         "failures": failures,
         "summary": summary,
         "next_required": next_required,
+        "state_recorded": state_recorded,
+        "state_warning": state_warning,
     })
 
 
@@ -2085,6 +2422,14 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "over_budget": False,
             "actions": ["Create the root folder, then call builder_map and builder_plan."],
         })
+
+    language_defaults = _language_budget_defaults(root)
+    if "max_source_files" not in args:
+        max_source_files = language_defaults["max_source_files"]
+    if "max_test_files" not in args:
+        max_test_files = language_defaults["max_test_files"]
+    if "max_source_dirs" not in args:
+        max_source_dirs = language_defaults["max_source_dirs"]
 
     code_exts = {
         ".c", ".cc", ".cpp", ".go", ".h", ".hpp", ".js", ".jsx",
@@ -2143,7 +2488,8 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
     elif after_verify:
         actions.extend([
             "The current phase is within budget after verification.",
-            "Call builder_resume to record the verification, then call builder_receipt if this stage is complete.",
+            "builder_verify has already recorded the verification; call builder_resume if you need to add checkpoint notes.",
+            "Call builder_receipt if this stage is complete.",
         ])
     else:
         actions.extend([
@@ -2152,11 +2498,34 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "After that capped batch, run builder_budget and builder_verify before expanding scope.",
         ])
 
+    guard: Dict[str, Any] = {}
+    state_recorded = False
+    state_warning = ""
+    try:
+        state = _load_state(root)
+        guard = _guard_from_state(state)
+        guard["last_budget_at"] = _now_iso()
+        guard["last_budget_after_verify"] = after_verify
+        guard["language_profile"] = _detect_language_profile(root)
+        if after_verify:
+            guard["writes_since_budget"] = 0
+            guard["verify_required"] = False
+            if guard.get("last_verify_success") is True:
+                guard["receipt_required"] = True
+        elif not guard.get("verify_required"):
+            guard["writes_since_budget"] = 0
+        state["guard"] = guard
+        _save_state(root, state)
+        state_recorded = True
+    except Exception as exc:
+        state_warning = f"Could not update .hermes-builder/state.json: {exc}"
+
     return _json({
         "success": True,
         "project_path": str(root),
         "phase": phase,
         "summary": f"Budget check: {len(source_files)} source file(s), {len(test_files)} test file(s), {len(source_dirs)} source dir(s), {len(issues)} issue(s).",
+        "language_profile": _detect_language_profile(root),
         "counts": {
             "source_files": len(source_files),
             "test_files": len(test_files),
@@ -2172,10 +2541,21 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
         "allowed_next_tools": (
             ["builder_verify", "builder_resume", "builder_receipt"]
             if issues
+            else ["builder_resume", "builder_receipt"]
+            if after_verify
             else ["write_file", "patch", "builder_budget", "builder_verify"]
         ),
         "issues": issues,
         "actions": actions,
+        "enforcement": {
+            "state_recorded": state_recorded,
+            "state_warning": state_warning,
+            "writes_since_budget": guard.get("writes_since_budget", 0),
+            "writes_since_verify": guard.get("writes_since_verify", 0),
+            "verify_required": bool(guard.get("verify_required", False)),
+            "receipt_required": bool(guard.get("receipt_required", False)),
+            "repair_patches_remaining": guard.get("repair_patches_remaining"),
+        },
         "source_sample": [_rel(path, root) for path in source_files[:40]],
         "test_sample": [_rel(path, root) for path in test_files[:40]],
     })
@@ -2222,6 +2602,18 @@ def builder_map(args: Dict[str, Any], **_: Any) -> str:
     elif not project_map.get("swift") and not project_map.get("python") and not project_map.get("rust") and not project_map.get("go") and "test" not in project_map["scripts"]:
         recommendations.insert(0, "No test script found; add one if this build has logic that needs proof.")
 
+    state_recorded = False
+    state_warning = ""
+    try:
+        state = _load_state(root)
+        guard = _guard_from_state(state)
+        guard["language_profile"] = _detect_language_profile(root)
+        state["guard"] = guard
+        _save_state(root, state)
+        state_recorded = True
+    except Exception as exc:
+        state_warning = f"Could not create .hermes-builder/state.json marker: {exc}"
+
     return _json({
         "success": True,
         "project_path": str(root),
@@ -2232,6 +2624,8 @@ def builder_map(args: Dict[str, Any], **_: Any) -> str:
         ),
         "map": project_map,
         "recommended_next": recommendations,
+        "state_recorded": state_recorded,
+        "state_warning": state_warning,
     })
 
 
@@ -2481,6 +2875,7 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
 
     existed = path.exists()
     state = _default_state(root) if action == "replace" else _load_state(root)
+    verification_incoming: List[Any] = []
 
     if action in {"update", "replace"}:
         scalar_fields = {
@@ -2511,9 +2906,28 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
                     item if isinstance(item, dict) else {"note": _clip(item, 2000), "recorded_at": _now_iso()}
                     for item in incoming
                 ]
+                verification_incoming = incoming
             else:
                 incoming = [_clip(item, 1200) for item in incoming]
             state[state_key] = _append_unique(list(state.get(state_key, [])), incoming, max_items=max_items)
+
+        if verification_incoming:
+            status = _verification_status(verification_incoming)
+            guard = _guard_from_state(state)
+            guard["builder_verify_used"] = True
+            guard["last_verify_success"] = status
+            guard["last_verify_at"] = _now_iso()
+            guard["writes_since_budget"] = 0
+            guard["writes_since_verify"] = 0
+            guard["verify_required"] = False
+            guard["language_profile"] = _detect_language_profile(root)
+            if status is True:
+                guard["receipt_required"] = True
+                guard["repair_patches_remaining"] = None
+            elif status is False:
+                guard["receipt_required"] = False
+                guard["repair_patches_remaining"] = 2
+            state["guard"] = guard
 
         state["project_path"] = str(root)
         state["updated_at"] = _now_iso()
@@ -2534,12 +2948,23 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
         "replace": "Replaced",
     }[action]
     next_required: List[str] = []
+    guard = _guard_from_state(state)
     if action in {"update", "replace"} and "verification" in args:
         next_required.extend([
             "If the recorded verification passed, do not write or patch more files in this turn.",
             "Call builder_budget with after_verify=true.",
             "Then call builder_receipt and record deferred layers instead of expanding the build.",
             "If the recorded verification failed, patch at most two concrete failures before rerunning builder_verify.",
+        ])
+    elif guard.get("receipt_required"):
+        next_required.extend([
+            "A passing verification is already recorded for this stage.",
+            "Call builder_budget with after_verify=true, then builder_receipt before adding more scope.",
+        ])
+    elif guard.get("verify_required"):
+        next_required.extend([
+            "The current stage has reached its write budget.",
+            "Call builder_budget, then builder_verify before writing more files.",
         ])
     return _json({
         "success": True,
@@ -2619,6 +3044,21 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         "warnings": warnings,
     }
 
+    state_recorded = False
+    state_warning = ""
+    try:
+        guard = _guard_from_state(state)
+        guard["receipt_required"] = False
+        guard["verify_required"] = False
+        guard["writes_since_budget"] = 0
+        guard["last_receipt_at"] = _now_iso()
+        guard["language_profile"] = _detect_language_profile(root)
+        state["guard"] = guard
+        _save_state(root, state)
+        state_recorded = True
+    except Exception as exc:
+        state_warning = f"Could not update receipt state: {exc}"
+
     return _json({
         "success": True,
         "project_path": str(root),
@@ -2631,4 +3071,6 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
             f"{len(warnings)} warning(s)."
         ),
         "receipt": receipt,
+        "state_recorded": state_recorded,
+        "state_warning": state_warning,
     })

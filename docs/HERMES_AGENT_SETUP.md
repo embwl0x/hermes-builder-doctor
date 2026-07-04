@@ -66,6 +66,11 @@ builder_verify
 builder_receipt
 ```
 
+Builder Doctor also registers `pre_tool_call` and `post_tool_call` hooks. The
+hooks stay inactive until a project has a `.hermes-builder/state.json` marker,
+which `builder_map`, `builder_budget`, `builder_verify`, `builder_resume`, and
+`builder_receipt` create or update.
+
 If the toolset is not visible, run:
 
 ```bash
@@ -118,7 +123,7 @@ Expected behavior:
 2. It writes only a small first slice.
 3. It checks phase size through `builder_budget`.
 4. It verifies through `builder_verify`.
-5. It records resume state.
+5. It follows hook blocks instead of forcing extra writes or raw terminal test loops.
 6. It finishes with `builder_receipt`.
 
 ## Automated Stress Test

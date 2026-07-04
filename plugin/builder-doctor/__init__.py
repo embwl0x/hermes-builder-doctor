@@ -8,6 +8,8 @@ from .tools import (
     builder_budget,
     builder_doctor,
     builder_map,
+    builder_post_tool_call,
+    builder_pre_tool_call,
     builder_plan,
     builder_receipt,
     builder_resume,
@@ -19,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 def register(ctx) -> None:
     """Register builder-doctor tools into the builder-doctor toolset."""
+    ctx.register_hook("pre_tool_call", builder_pre_tool_call)
+    ctx.register_hook("post_tool_call", builder_post_tool_call)
     ctx.register_tool(
         name="builder_map",
         toolset="builder-doctor",

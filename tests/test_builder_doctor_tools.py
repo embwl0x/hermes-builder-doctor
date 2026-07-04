@@ -109,6 +109,112 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertTrue(any("builder_receipt" in item for item in result["next_required"]))
         self.assertTrue(any("do not write" in item.lower() for item in result["next_required"]))
 
+    def test_builder_map_marks_project_and_write_gate_blocks_fourth_edit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            map_result = json.loads(self.tools.builder_map({"project_path": str(root)}))
+            self.assertTrue(map_result["state_recorded"])
+
+            for index in range(3):
+                self.tools.builder_post_tool_call(
+                    tool_name="write_file",
+                    args={"path": str(root / f"file{index}.py")},
+                    result=json.dumps({"success": True}),
+                    status="ok",
+                )
+
+            block = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "file3.py")},
+            )
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["action"], "block")
+        self.assertIn("write budget", block["message"])
+
+    def test_builder_verify_success_requires_receipt_and_blocks_raw_verifier(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+
+            verify = json.loads(
+                self.tools.builder_verify(
+                    {
+                        "project_path": str(root),
+                        "commands": ["python3 -m compileall -q ."],
+                    }
+                )
+            )
+            state = json.loads((root / ".hermes-builder" / "state.json").read_text(encoding="utf-8"))
+            write_block = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "extra.py")},
+            )
+            terminal_block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={"command": "python3 -m compileall -q .", "workdir": str(root)},
+            )
+
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+            write_after_receipt = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "next_stage.py")},
+            )
+
+        self.assertTrue(verify["success"])
+        self.assertTrue(verify["state_recorded"])
+        self.assertTrue(state["guard"]["receipt_required"])
+        self.assertIsNotNone(write_block)
+        self.assertIn("builder_verify has already passed", write_block["message"])
+        self.assertIsNotNone(terminal_block)
+        self.assertIn("raw terminal verifier", terminal_block["message"])
+        self.assertTrue(receipt["state_recorded"])
+        self.assertIsNone(write_after_receipt)
+
+    def test_failed_verify_allows_two_repair_patches_then_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tools.builder_map({"project_path": str(root)})
+            verify = json.loads(
+                self.tools.builder_verify(
+                    {
+                        "project_path": str(root),
+                        "commands": ["python3 -c 'import sys; sys.exit(1)'"],
+                    }
+                )
+            )
+            first = self.tools.builder_pre_tool_call(
+                tool_name="patch",
+                args={"path": str(root / "repair.py")},
+            )
+            self.tools.builder_post_tool_call(
+                tool_name="patch",
+                args={"path": str(root / "repair.py")},
+                result=json.dumps({"success": True}),
+                status="ok",
+            )
+            second = self.tools.builder_pre_tool_call(
+                tool_name="patch",
+                args={"path": str(root / "repair.py")},
+            )
+            self.tools.builder_post_tool_call(
+                tool_name="patch",
+                args={"path": str(root / "repair.py")},
+                result=json.dumps({"success": True}),
+                status="ok",
+            )
+            third = self.tools.builder_pre_tool_call(
+                tool_name="patch",
+                args={"path": str(root / "repair.py")},
+            )
+
+        self.assertFalse(verify["success"])
+        self.assertIsNone(first)
+        self.assertIsNone(second)
+        self.assertIsNotNone(third)
+        self.assertIn("smallest relevant command", third["message"])
+
     def test_verify_blocks_dependency_mutation_commands(self) -> None:
         blocked = [
             "npm install",

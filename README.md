@@ -21,6 +21,11 @@ Hermes configuration, API keys, session logs, or machine-specific paths.
 - `builder_verify`: bounded build/test runner with compact diagnostics.
 - `builder_resume`: project-local checkpoint state in `.hermes-builder/state.json`.
 - `builder_receipt`: final handoff summary with files, checks, and warnings.
+- Hermes hooks that enforce staging inside Builder Doctor-marked projects:
+  three write/patch calls trigger a verification gate, passing verification
+  requires budget/receipt before more edits, failed verification allows two
+  repair patches before another check, and raw terminal verifier loops are
+  redirected back to `builder_verify`.
 
 Supported lanes:
 
@@ -99,6 +104,8 @@ JSON report, and deletes generated projects unless `--keep-projects` is passed.
 
 - `builder_verify` blocks install/mutation commands such as `npm install`,
   `pip install`, `cargo add`, and `go get`.
+- After `builder_map` marks a project, Builder Doctor's hooks enforce staged
+  build flow only inside that project's `.hermes-builder/state.json` boundary.
 - The tools do not run dev servers, watchers, or long-lived app processes.
 - Verification output is compacted and tailed to reduce context growth.
 - The skill encourages staged vertical slices instead of one-shot large systems.
