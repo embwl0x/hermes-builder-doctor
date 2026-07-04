@@ -41,12 +41,18 @@ tests/                      Standard-library smoke tests
 
 ## Quick Install
 
-From a clone of this repository:
+Because this repository is private right now, first clone it with an authorized
+GitHub account:
 
 ```bash
-mkdir -p "$HOME/.hermes/plugins" "$HOME/.hermes/skills/software-development"
-cp -R plugin/builder-doctor "$HOME/.hermes/plugins/builder-doctor"
-cp -R skills/builder-doctor "$HOME/.hermes/skills/software-development/builder-doctor"
+gh repo clone embwl0x/hermes-builder-doctor
+cd hermes-builder-doctor
+```
+
+Then install:
+
+```bash
+./scripts/install.sh --verify
 ```
 
 Then restart Hermes or its gateway so the plugin and skill are reloaded.
@@ -54,11 +60,15 @@ Then restart Hermes or its gateway so the plugin and skill are reloaded.
 Optional: copy the ideas from `examples/` into your own Hermes config or agent
 soul files. Do not paste examples blindly over an existing production config.
 
+See `docs/HERMES_AGENT_SETUP.md` for private-repo cloning, custom Hermes homes,
+force installs with backups, and smaller local model prompt guidance.
+
 ## Test
 
 ```bash
 python3 -m unittest discover -s tests
 python3 -m py_compile plugin/builder-doctor/tools.py plugin/builder-doctor/__init__.py
+./scripts/install.sh --dry-run
 ```
 
 The tests avoid external Python dependencies.

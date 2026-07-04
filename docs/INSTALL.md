@@ -8,14 +8,26 @@ Builder Doctor has two parts:
 Install both into your Hermes home:
 
 ```bash
-mkdir -p "$HOME/.hermes/plugins" "$HOME/.hermes/skills/software-development"
-cp -R plugin/builder-doctor "$HOME/.hermes/plugins/builder-doctor"
-cp -R skills/builder-doctor "$HOME/.hermes/skills/software-development/builder-doctor"
+./scripts/install.sh --verify
 ```
 
 Restart Hermes after installing. The exact command depends on your Hermes
 setup; common options are restarting the desktop app or restarting the gateway
 service.
+
+For a custom Hermes home:
+
+```bash
+./scripts/install.sh --hermes-home "$HOME/.hermes" --verify
+```
+
+To replace an older Builder Doctor install:
+
+```bash
+./scripts/install.sh --force --verify
+```
+
+The installer creates timestamped backups before replacing an existing install.
 
 ## Verify Registration
 
