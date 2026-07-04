@@ -59,6 +59,7 @@ After restart, confirm the `builder-doctor` toolset contains:
 ```text
 builder_map
 builder_doctor
+builder_budget
 builder_plan
 builder_resume
 builder_verify
@@ -92,8 +93,10 @@ Use this prompt shape when testing smaller local coding models:
 Use Builder Doctor for this build. First create or identify the project root,
 then run builder_map and builder_plan. Build only a staged verified kernel:
 manifest/config, one or two core modules, and one focused test file. Use
-builder_verify for checks. After the first successful verification, stop adding
-features, call builder_resume with deferred layers, then call builder_receipt.
+builder_budget after source/test batches and builder_verify for checks. After
+the first successful verification, stop adding features, call builder_resume
+with deferred layers, run builder_budget with after_verify set, then call
+builder_receipt.
 ```
 
 This keeps the model out of long one-shot project generation and gives it a
@@ -113,6 +116,30 @@ Expected behavior:
 
 1. The agent maps and plans before broad edits.
 2. It writes only a small first slice.
-3. It verifies through `builder_verify`.
-4. It records resume state.
-5. It finishes with `builder_receipt`.
+3. It checks phase size through `builder_budget`.
+4. It verifies through `builder_verify`.
+5. It records resume state.
+6. It finishes with `builder_receipt`.
+
+## Automated Stress Test
+
+For a repeatable check, run the bundled stress harness from this repository:
+
+```bash
+./scripts/stress_hermes_builds.py \
+  --base-url http://127.0.0.1:8644 \
+  --model your-local-model-alias \
+  --tasks node,python,go
+```
+
+If `API_SERVER_KEY` is not already exported, the harness tries to read
+`$HOME/.hermes/.env`. You can also point it at a different env file:
+
+```bash
+./scripts/stress_hermes_builds.py --env-file /path/to/hermes.env
+```
+
+The harness creates disposable projects, watches Hermes tool events, runs
+independent verification commands, optionally asks for one repair pass, writes a
+JSON report, and deletes generated projects by default. Use `--keep-projects`
+when debugging a failure.

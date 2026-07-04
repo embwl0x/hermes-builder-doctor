@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from .tools import (
+    builder_budget,
     builder_doctor,
     builder_map,
     builder_plan,
@@ -69,6 +70,52 @@ def register(ctx) -> None:
         handler=builder_doctor,
         description="Scan a project for common build/test/type-system weak spots.",
         emoji="🩺",
+    )
+    ctx.register_tool(
+        name="builder_budget",
+        toolset="builder-doctor",
+        schema={
+            "name": "builder_budget",
+            "description": "Use during local-model software builds after each source/test batch and after successful verification. Checks whether the current phase has grown beyond the staged-kernel budget and tells the agent whether to verify, receipt, or defer scope.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "Absolute path to the project root.",
+                    },
+                    "phase": {
+                        "type": "string",
+                        "description": "Current phase name, such as scaffold, kernel, hardening, integration, or repair.",
+                        "default": "kernel",
+                    },
+                    "after_verify": {
+                        "type": "boolean",
+                        "description": "Set true immediately after builder_verify succeeds.",
+                        "default": False,
+                    },
+                    "max_source_files": {
+                        "type": "integer",
+                        "description": "Maximum source files for the current phase before the tool recommends stopping scope.",
+                        "default": 8,
+                    },
+                    "max_test_files": {
+                        "type": "integer",
+                        "description": "Maximum test files for the current phase before the tool recommends stopping scope.",
+                        "default": 4,
+                    },
+                    "max_source_dirs": {
+                        "type": "integer",
+                        "description": "Maximum source directories/packages for the current phase before the tool recommends stopping scope.",
+                        "default": 4,
+                    },
+                },
+                "required": ["project_path"],
+            },
+        },
+        handler=builder_budget,
+        description="Check phase/file budget and decide whether to verify, receipt, or defer scope.",
+        emoji="📏",
     )
     ctx.register_tool(
         name="builder_plan",

@@ -52,6 +52,40 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIn("one package name", diagnostics[0]["message"])
         self.assertTrue(any("package declarations" in item for item in result["suggested_next"]))
 
+    def test_builder_budget_flags_wide_kernel(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "go.mod").write_text("module example.com/wide\n\ngo 1.22\n", encoding="utf-8")
+            for index in range(5):
+                pkg = root / "internal" / f"pkg{index}"
+                pkg.mkdir(parents=True)
+                (pkg / f"pkg{index}.go").write_text(
+                    f"package pkg{index}\n\nfunc Value() int {{ return {index} }}\n",
+                    encoding="utf-8",
+                )
+            (root / "wide_test.go").write_text(
+                "package wide\n\nimport \"testing\"\n\nfunc TestWide(t *testing.T) {}\n",
+                encoding="utf-8",
+            )
+
+            result = json.loads(
+                self.tools.builder_budget(
+                    {
+                        "project_path": str(root),
+                        "phase": "stage 1",
+                        "max_source_files": 3,
+                        "max_source_dirs": 3,
+                    }
+                )
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(result["over_budget"])
+        codes = {issue["code"] for issue in result["issues"]}
+        self.assertIn("source-file-budget-exceeded", codes)
+        self.assertIn("source-dir-budget-exceeded", codes)
+        self.assertTrue(any("stop adding" in action.lower() for action in result["actions"]))
+
     def test_verify_blocks_dependency_mutation_commands(self) -> None:
         blocked = [
             "npm install",

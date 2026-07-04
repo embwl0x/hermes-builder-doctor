@@ -2044,12 +2044,134 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         results.append(record)
 
     summary = f"Ran {len(commands)} command(s); {len(failures)} failure(s)."
+    next_required: List[str] = []
+    if any_failure:
+        next_required.append("Patch one concrete failure, then rerun builder_verify; do not add new features.")
+        next_required.append("Make at most two focused patches before rerunning builder_verify; do not stack broad patch bursts.")
+    else:
+        next_required.extend([
+            "Record this successful verification with builder_resume.",
+            "Call builder_budget with after_verify=true before writing more files.",
+            "If this is the intended stage, call builder_receipt now instead of rerunning the same command through terminal.",
+        ])
     return _json({
         "success": not any_failure,
         "project_path": project_path,
         "commands": results,
         "failures": failures,
         "summary": summary,
+        "next_required": next_required,
+    })
+
+
+# ---------------------------------------------------------------------------
+# builder_budget
+# ---------------------------------------------------------------------------
+
+def builder_budget(args: Dict[str, Any], **_: Any) -> str:
+    project_path = args.get("project_path", "")
+    phase = str(args.get("phase", "kernel")).strip().lower() or "kernel"
+    after_verify = bool(args.get("after_verify", False))
+    max_source_files = _safe_int(args.get("max_source_files", 8), default=8, min_value=1, max_value=500)
+    max_test_files = _safe_int(args.get("max_test_files", 4), default=4, min_value=0, max_value=500)
+    max_source_dirs = _safe_int(args.get("max_source_dirs", 4), default=4, min_value=1, max_value=200)
+
+    root = Path(project_path).resolve()
+    if not root.is_dir():
+        return _json({
+            "success": False,
+            "project_path": project_path,
+            "summary": "Project path does not exist or is not a directory.",
+            "over_budget": False,
+            "actions": ["Create the root folder, then call builder_map and builder_plan."],
+        })
+
+    code_exts = {
+        ".c", ".cc", ".cpp", ".go", ".h", ".hpp", ".js", ".jsx",
+        ".mjs", ".py", ".rs", ".swift", ".ts", ".tsx", ".vue",
+    }
+    sampled = _walk_project_files(root, max_files=3000)
+    source_files = [
+        path for path in sampled
+        if path.suffix in code_exts and not any(part in SKIP_DIRS for part in path.parts)
+    ]
+    test_files = [
+        path for path in source_files
+        if path.name.endswith(("_test.go", "Tests.swift"))
+        or any(marker in path.parts for marker in ("tests", "test", "__tests__"))
+        or ".test." in path.name
+        or ".spec." in path.name
+        or path.name.startswith("test_")
+    ]
+    source_dirs = sorted({_rel(path.parent, root) for path in source_files})
+    go_info = _go_project_info(root, sampled)
+    mixed_package_dirs = go_info.get("mixed_package_dirs", {}) if go_info.get("is_go_project") else {}
+
+    issues: List[Dict[str, Any]] = []
+    if len(source_files) > max_source_files:
+        issues.append({
+            "code": "source-file-budget-exceeded",
+            "message": "The current phase has more source files than the staged-kernel budget.",
+            "evidence": f"source_files={len(source_files)} > max_source_files={max_source_files}",
+        })
+    if len(test_files) > max_test_files:
+        issues.append({
+            "code": "test-file-budget-exceeded",
+            "message": "The current phase has more test files than the staged-kernel budget.",
+            "evidence": f"test_files={len(test_files)} > max_test_files={max_test_files}",
+        })
+    if len(source_dirs) > max_source_dirs:
+        issues.append({
+            "code": "source-dir-budget-exceeded",
+            "message": "The current phase spans too many source directories/packages.",
+            "evidence": f"source_dirs={len(source_dirs)} > max_source_dirs={max_source_dirs}",
+        })
+    if mixed_package_dirs:
+        issues.append({
+            "code": "go-mixed-package-dirs",
+            "message": "One or more Go directories contain multiple package names.",
+            "evidence": json.dumps(mixed_package_dirs, ensure_ascii=True, sort_keys=True),
+        })
+
+    actions: List[str] = []
+    if issues:
+        actions.extend([
+            "Stop adding files for this phase now.",
+            "If verification has not passed for the current file set, run builder_verify before any more write_file or patch calls.",
+            "If verification already passed, call builder_resume and builder_receipt, then defer the extra scope to a later phase.",
+        ])
+    elif after_verify:
+        actions.extend([
+            "The current phase is within budget after verification.",
+            "Call builder_resume to record the verification, then call builder_receipt if this stage is complete.",
+        ])
+    else:
+        actions.extend([
+            "The current phase is within budget.",
+            "The next source/test batch is capped at two files or three write_file/patch calls.",
+            "After that capped batch, run builder_budget and builder_verify before expanding scope.",
+        ])
+
+    return _json({
+        "success": True,
+        "project_path": str(root),
+        "phase": phase,
+        "summary": f"Budget check: {len(source_files)} source file(s), {len(test_files)} test file(s), {len(source_dirs)} source dir(s), {len(issues)} issue(s).",
+        "counts": {
+            "source_files": len(source_files),
+            "test_files": len(test_files),
+            "source_dirs": len(source_dirs),
+        },
+        "limits": {
+            "max_source_files": max_source_files,
+            "max_test_files": max_test_files,
+            "max_source_dirs": max_source_dirs,
+        },
+        "over_budget": bool(issues),
+        "issues": issues,
+        "actions": actions,
+        "source_sample": [_rel(path, root) for path in source_files[:40]],
+        "test_sample": [_rel(path, root) for path in test_files[:40]],
     })
 
 
@@ -2185,7 +2307,7 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
             "title": "Scaffold the thin working slice",
             "goal": "Create the minimal runnable shell, scripts, and directory layout before adding breadth.",
             "max_file_batch": 4,
-            "tools": ["write_file", "builder_resume", "builder_verify"],
+            "tools": ["write_file", "builder_budget", "builder_resume", "builder_verify"],
             "done_when": "The project has explicit build/test scripts and a runnable minimal path.",
             "verification": verify_command or "Add a small self-check command, then run builder_verify.",
         })
@@ -2242,7 +2364,7 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
             "title": "Hardening and edge cases",
             "goal": "Add validation, empty/error states, persistence boundaries, and focused tests.",
             "max_file_batch": 4,
-            "tools": ["builder_doctor", "builder_resume", "builder_verify"],
+            "tools": ["builder_doctor", "builder_budget", "builder_resume", "builder_verify"],
             "done_when": "High-risk branches have tests or an explicit manual proof path.",
             "verification": verify_command or "Run targeted tests through builder_verify.",
         },
@@ -2251,7 +2373,7 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
             "title": "Integration pass",
             "goal": "Run the strongest bounded verification available and fix only failures tied to the objective.",
             "max_file_batch": 3,
-            "tools": ["builder_doctor", "builder_verify", "builder_resume"],
+            "tools": ["builder_doctor", "builder_budget", "builder_verify", "builder_resume"],
             "done_when": "Build/test/lint status is recorded with command names and outcomes.",
             "verification": "builder_verify with build/test/lint commands that exist.",
         },
@@ -2287,10 +2409,14 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
         "rules": [
             "Touch no more than the phase max_file_batch before verifying or recording state.",
             "Hard stop after 4 file writes/patches in one phase: run builder_verify before expanding scope.",
+            "Call builder_budget after each source/test batch and after successful verification; if it reports over_budget, stop adding scope and receipt/defer.",
+            "After builder_budget reports within budget, the next source/test batch is still capped at two files or three write_file/patch calls before builder_verify.",
             "For super-complex objectives, build a verified kernel first and record deferred layers instead of attempting the full system in one turn.",
             "Before writing source, choose stable language identity and keep it consistent: Node module style, Swift target names, Python import root, Rust crate/module names, and one Go package name per directory.",
             "For Go, if builder_map shows mixed_package_dirs or builder_verify reports found packages X and Y, fix package declarations or move files before behavior work.",
             "After the first builder_verify, fix only verification failures; do not add new features.",
+            "After any failed builder_verify, make at most two focused patches before rerunning builder_verify.",
+            "After builder_verify succeeds, do not rerun the same command via terminal; call builder_resume, builder_budget, then builder_receipt.",
             "If verification still fails after one focused fix pass, call builder_receipt and report the remaining failure.",
             "Before the session reaches roughly 45k context tokens, force a checkpoint/receipt instead of starting another feature pass.",
             "Use builder_resume after every phase boundary or meaningful change in direction.",

@@ -17,6 +17,7 @@ Hermes configuration, API keys, session logs, or machine-specific paths.
 - `builder_map`: compact project facts before editing.
 - `builder_plan`: phased build plan with small batches and verification gates.
 - `builder_doctor`: static project risk scan for common setup mistakes.
+- `builder_budget`: phase/file budget check so models stop widening scope.
 - `builder_verify`: bounded build/test runner with compact diagnostics.
 - `builder_resume`: project-local checkpoint state in `.hermes-builder/state.json`.
 - `builder_receipt`: final handoff summary with files, checks, and warnings.
@@ -72,6 +73,22 @@ python3 -m py_compile plugin/builder-doctor/tools.py plugin/builder-doctor/__ini
 ```
 
 The tests avoid external Python dependencies.
+
+## Stress A Hermes Agent
+
+After installing into a Hermes agent, you can run disposable build stress tests
+against that agent:
+
+```bash
+API_SERVER_KEY=... ./scripts/stress_hermes_builds.py \
+  --base-url http://127.0.0.1:8644 \
+  --model your-local-model-alias \
+  --tasks node,python,go
+```
+
+The stress harness starts Hermes `/v1/runs`, streams tool events, independently
+verifies the generated projects, asks for one repair pass by default, writes a
+JSON report, and deletes generated projects unless `--keep-projects` is passed.
 
 ## Safety Notes
 

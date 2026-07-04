@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.5.4
+version: 0.5.5
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -96,6 +96,8 @@ Hard gate for large builds:
   directory.
 - For super-complex prompts, build a verified kernel first: manifest/config, one or two core modules, one focused test file, then `builder_verify`.
 - Treat broad systems as staged layers. Finish the current verified layer and record deferred layers in `builder_resume` / `builder_receipt` instead of attempting the whole system in one turn.
+- After each source/test batch, call `builder_budget`. If it reports `over_budget: true`, do not add files; verify the current slice, receipt it, and defer the extra scope.
+- When `builder_budget` reports the phase is still within budget, the next batch is still capped at two files or three write/patch calls before another `builder_budget`/`builder_verify`.
 - After the first `builder_verify`, do not expand scope. Fix only verification failures.
 - If verification still fails after one focused fix pass, call `builder_receipt` and report the remaining failure instead of continuing indefinitely.
 - Before context grows past roughly 45k tokens, force a receipt/checkpoint instead of starting another feature pass.
@@ -150,7 +152,9 @@ After each fix, run only the relevant script again. Do not run the full suite un
 Verification discipline:
 - Once `builder_verify` has been used for a project, continue verification through `builder_verify`; do not switch to the raw terminal for the same test/build/check command.
 - Use raw terminal only for bounded setup/introspection that `builder_verify` is not meant to do, such as creating the initial project folder, listing files, or reading command availability.
+- When `builder_verify` succeeds, do not rerun the same command through raw terminal for reassurance. Call `builder_resume`, `builder_budget` with `after_verify: true`, then `builder_receipt`.
 - If `builder_verify` fails twice on the same command, call `builder_doctor`, read the first structured diagnostic, patch one cause, and rerun `builder_verify` once.
+- If a repair needs more than two patches before verification, stop patching and rerun `builder_verify` or produce `builder_receipt` with the remaining failure.
 - If a terminal tool guardrail fires during verification, do not repeat the terminal command. Switch back to `builder_verify`, checkpoint with `builder_resume`, or finish with `builder_receipt`.
 - Record every successful verification in `builder_resume` before the final receipt.
 - If the build has gone more than one tool cycle without visible verification after several writes, shrink scope immediately instead of continuing broad file creation.
@@ -243,6 +247,26 @@ Returns JSON:
 - `project_path` (string)
 - `summary` (string)
 - `findings` (array of objects with `severity`, `code`, `file`, `message`, `evidence`, `suggested_fix`)
+
+### builder_budget
+
+Inputs:
+- `project_path` (string, required)
+- `phase` (string, optional)
+- `after_verify` (bool, optional, default `false`)
+- `max_source_files` (integer, optional, default `8`)
+- `max_test_files` (integer, optional, default `4`)
+- `max_source_dirs` (integer, optional, default `4`)
+
+Returns JSON:
+- `success` (bool)
+- `project_path` (string)
+- `phase` (string)
+- `counts` (object with source file, test file, and source directory totals)
+- `limits` (object with configured source/test/directory budgets)
+- `over_budget` (bool)
+- `issues` (array with budget or mixed-package warnings)
+- `actions` (array of next-step guidance)
 
 ### builder_plan
 

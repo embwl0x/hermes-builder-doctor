@@ -97,11 +97,14 @@ fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 if [ "$FORCE" = "1" ]; then
+  BACKUP_ROOT="$HERMES_HOME/backups/builder-doctor/$STAMP"
   if [ -e "$PLUGIN_DST" ]; then
-    run mv "$PLUGIN_DST" "$PLUGIN_DST.bak-$STAMP"
+    run mkdir -p "$BACKUP_ROOT"
+    run mv "$PLUGIN_DST" "$BACKUP_ROOT/plugin"
   fi
   if [ -e "$SKILL_DST" ]; then
-    run mv "$SKILL_DST" "$SKILL_DST.bak-$STAMP"
+    run mkdir -p "$BACKUP_ROOT"
+    run mv "$SKILL_DST" "$BACKUP_ROOT/skill"
   fi
 fi
 
@@ -122,7 +125,7 @@ Next steps:
   1. Rerun without --dry-run to install.
   2. Restart Hermes or its gateway so plugins and skills reload.
   3. Confirm the builder-doctor toolset exposes:
-     builder_map, builder_doctor, builder_plan, builder_resume, builder_verify, builder_receipt.
+     builder_map, builder_doctor, builder_budget, builder_plan, builder_resume, builder_verify, builder_receipt.
 EOF
 else
   cat <<EOF
@@ -132,7 +135,7 @@ Installed Hermes Builder Doctor.
 Next steps:
   1. Restart Hermes or its gateway so plugins and skills reload.
   2. Confirm the builder-doctor toolset exposes:
-     builder_map, builder_doctor, builder_plan, builder_resume, builder_verify, builder_receipt.
+     builder_map, builder_doctor, builder_budget, builder_plan, builder_resume, builder_verify, builder_receipt.
   3. For small local models, use the staged-kernel prompt pattern in docs/HERMES_AGENT_SETUP.md.
 EOF
 fi

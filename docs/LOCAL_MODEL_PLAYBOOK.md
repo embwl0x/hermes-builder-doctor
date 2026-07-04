@@ -12,10 +12,12 @@ process boundaries.
    - manifest or package config
    - one or two core modules
    - one focused test file
-5. Run `builder_verify`.
-6. Fix only the first concrete failure.
-7. Save state with `builder_resume`.
-8. Finish the current layer with `builder_receipt`.
+5. Run `builder_budget`.
+6. Run `builder_verify`.
+7. Fix only the first concrete failure.
+8. Save state with `builder_resume`.
+9. Run `builder_budget` again with `after_verify: true`.
+10. Finish the current layer with `builder_receipt`.
 
 ## Why This Helps
 
@@ -28,9 +30,22 @@ keeping context and tool output bounded.
 ```text
 Build this as staged verified layers. First create a minimal kernel with config,
 one or two core modules, and focused tests. Use builder_map and builder_plan
-before broad edits. Use builder_verify for checks. Stop after the first verified
-layer and record deferred layers in builder_resume and builder_receipt.
+before broad edits. Use builder_budget after each source/test batch and
+builder_verify for checks. Stop after the first verified layer, run
+builder_budget with after_verify set, and record deferred layers in
+builder_resume and builder_receipt.
 ```
+
+## Stress-Test Lessons
+
+- A successful `builder_verify` is enough; do not rerun the same verifier
+  through a raw terminal command for reassurance.
+- If `builder_budget` says the slice is over budget, stop adding files,
+  verify what exists, and defer the extra scope.
+- If `builder_budget` says the slice is within budget, still cap the next batch
+  at two files or three write/patch calls before another budget/verify gate.
+- If a language lane starts creating many packages or directories, use
+  `builder_receipt` to close the verified kernel before adding integrations.
 
 ## Language-Specific Rules
 

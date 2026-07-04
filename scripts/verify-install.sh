@@ -50,7 +50,7 @@ printf 'Checking Hermes Builder Doctor install under %s\n' "$HERMES_HOME"
 
 python3 -m py_compile "$PLUGIN_DIR/tools.py" "$PLUGIN_DIR/__init__.py"
 
-for tool in builder_map builder_doctor builder_plan builder_resume builder_verify builder_receipt; do
+for tool in builder_map builder_doctor builder_budget builder_plan builder_resume builder_verify builder_receipt; do
   grep -q "$tool" "$PLUGIN_DIR/__init__.py" || die "tool not referenced in __init__.py: $tool"
   grep -q "$tool" "$PLUGIN_DIR/plugin.yaml" "$SKILL_DIR/SKILL.md" || die "tool not documented: $tool"
 done

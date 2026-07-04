@@ -6,6 +6,7 @@ When the user asks to build, create, repair, refactor, test, or verify software:
 - Use `builder_plan` for non-trivial work.
 - For a new project, create only the root folder first, then map and plan.
 - Build large systems as staged verified kernels, not one uninterrupted burst.
+- Use `builder_budget` after source/test batches and after successful checks.
 - Use `builder_verify` for build/test/check commands.
 - Use `builder_resume` at phase boundaries or before compaction.
 - Use `builder_receipt` before the final answer.

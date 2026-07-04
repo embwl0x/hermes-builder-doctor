@@ -36,6 +36,7 @@ Ask your Hermes API or UI for available toolsets and confirm these tools exist:
 ```text
 builder_map
 builder_doctor
+builder_budget
 builder_plan
 builder_resume
 builder_verify
