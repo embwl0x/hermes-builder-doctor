@@ -911,6 +911,89 @@ def _language_budget_defaults(root: Path) -> Dict[str, int]:
     return defaults.get(profile, {"max_source_files": 8, "max_test_files": 4, "max_source_dirs": 4})
 
 
+def _language_stage_policy(root: Path) -> Dict[str, Any]:
+    profile = _detect_language_profile(root)
+    policies: Dict[str, Dict[str, Any]] = {
+        "node": {
+            "preset": "node-esm-kernel",
+            "first_slice": [
+                "package.json with type=module and a bounded test script",
+                "one implementation module",
+                "one node:test file",
+            ],
+            "verify": "npm test or the detected package-manager test script through builder_verify",
+            "forbidden": ["npm install/add/ci", "pnpm add/install", "yarn add/install", "bun add/install", "node_modules"],
+            "repair": "Patch one JS/TS diagnostic or failing assertion; do not change package manager or install packages.",
+        },
+        "python": {
+            "preset": "python-stdlib-kernel",
+            "first_slice": [
+                "pyproject.toml metadata",
+                "one importable module/package",
+                "one tests/test_*.py unittest file",
+            ],
+            "verify": "python3 -m unittest discover -s tests unless pytest is explicitly declared",
+            "forbidden": ["pip install", "python -m pip install", "uv pip", "uv sync", "uv run for stdlib kernels", ".venv"],
+            "repair": "Patch the first traceback/import/test failure; do not create an environment to fix import layout.",
+        },
+        "go": {
+            "preset": "go-package-kernel",
+            "first_slice": ["go.mod", "one package implementation file", "one *_test.go file"],
+            "verify": "go test ./... through builder_verify",
+            "forbidden": ["go get", "go install", "go run", "go mod tidy/download/vendor during the first slice"],
+            "repair": "Keep one package name per directory; fix package setup before behavior changes.",
+        },
+        "swift": {
+            "preset": "swiftpm-library-kernel",
+            "first_slice": [
+                "Package.swift with one library target and one XCTest target",
+                "one Sources/<Target>/<Target>.swift implementation file",
+                "one Tests/<Target>Tests/<Target>Tests.swift XCTest file",
+            ],
+            "verify": "swift build and swift test through builder_verify",
+            "forbidden": ["extra targets before first passing swift test", "weakening XCTest assertions", "swift run as verification"],
+            "repair": "Patch the first compiler/XCTest diagnostic only, then rerun swift test.",
+        },
+        "rust": {
+            "preset": "rust-lib-kernel",
+            "first_slice": ["Cargo.toml", "src/lib.rs", "inline #[cfg(test)] tests"],
+            "verify": "cargo test through builder_verify",
+            "forbidden": ["cargo add/install/update/run", "targeted test as final proof", "parallel replacement modules"],
+            "repair": "Patch one compiler diagnostic or failing test; full cargo test is required before receipt.",
+        },
+    }
+    policy = dict(policies.get(profile, {
+        "preset": "generic-staged-kernel",
+        "first_slice": ["manifest/config", "one implementation file", "one focused test file"],
+        "verify": "smallest bounded test/build command through builder_verify",
+        "forbidden": ["dependency installs", "dev servers", "watchers", "broad scaffolds before first verification"],
+        "repair": "Patch one concrete diagnostic, then rerun builder_verify.",
+    }))
+    policy["language_profile"] = profile
+    policy["budget_defaults"] = _language_budget_defaults(root)
+    return policy
+
+
+def _environment_artifact_dirs(root: Path) -> List[str]:
+    names = {
+        ".venv",
+        "__pypackages__",
+        ".tox",
+        ".nox",
+        "node_modules",
+        ".pnpm-store",
+        ".yarn",
+        ".pytest_cache",
+    }
+    found: List[str] = []
+    if not root.exists():
+        return found
+    for path in root.iterdir():
+        if path.is_dir() and path.name in names:
+            found.append(path.name)
+    return sorted(found)
+
+
 def _expand_tool_path(raw: Any, base: Optional[Path] = None) -> Optional[Path]:
     if not isinstance(raw, str) or not raw.strip():
         return None
@@ -1090,6 +1173,23 @@ def _is_terminal_file_mutation_command(command: str) -> bool:
     return any(re.search(pattern, command) for pattern in patterns)
 
 
+def _is_dependency_or_env_mutation_command(command: str) -> bool:
+    patterns = [
+        r"\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|i|ci)\b",
+        r"\b(?:npm|pnpm|yarn|bun)\s+dlx\b",
+        r"\buv\s+(?:add|remove|sync|lock|pip|venv)\b",
+        r"\bpython(?:3)?\s+-m\s+(?:pip\s+install|venv)\b",
+        r"\bpip(?:3)?\s+install\b",
+        r"\bvirtualenv\b",
+        r"\bpoetry\s+(?:add|install|update|lock)\b",
+        r"\bpipenv\s+install\b",
+        r"\bcargo\s+(?:add|install|update|run)\b",
+        r"\bgo\s+(?:get|install|run)\b",
+        r"\bgo\s+mod\s+(?:download|tidy|vendor)\b",
+    ]
+    return any(re.search(pattern, command) for pattern in patterns)
+
+
 def _result_has_error(result: Any, status: str = "") -> bool:
     if status and status not in {"ok", "success"}:
         return True
@@ -1210,6 +1310,18 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
                     "Builder Doctor blocked this terminal file mutation. Use write_file or patch "
                     "for source/test/config edits so the project-root, write-budget, verification, and "
                     "repair-plan guards can track the change."
+                ),
+            )
+        if _is_dependency_or_env_mutation_command(command):
+            return _write_guard_block(
+                root,
+                state,
+                guard,
+                "dependency-env-mutation-blocked",
+                (
+                    "Builder Doctor blocked this dependency/environment mutation inside the mapped project. "
+                    "Use the language preset from builder_map/builder_budget: keep the first slice small, "
+                    "avoid local env/install artifacts, and verify with builder_verify."
                 ),
             )
         return None
@@ -1412,9 +1524,11 @@ def _is_blocked_verify_command(command: str) -> bool:
         r"\bcargo\s+(?:add|install|update|run)\b",
         r"\bgo\s+(?:get|install|run)\b",
         r"\bgo\s+mod\s+(?:download|tidy|vendor)\b",
-        r"\buv\s+(?:add|remove|sync|lock|pip)\b",
+        r"\buv\s+(?:add|remove|sync|lock|pip|venv)\b",
         r"\bpython(?:3)?\s+-m\s+pip\s+install\b",
+        r"\bpython(?:3)?\s+-m\s+venv\b",
         r"\bpip(?:3)?\s+install\b",
+        r"\bvirtualenv\b",
         r"\bpoetry\s+(?:add|install|update|lock)\b",
         r"\bpipenv\s+install\b",
     ]
@@ -1494,13 +1608,15 @@ def _default_verify_commands(root: Path, pkg: Dict[str, Any], scripts: Dict[str,
         has_pytest = (
             "pytest" in python_info.get("dependencies", [])
             or "pytest" in python_info.get("tools", [])
-            or bool(python_info.get("test_files"))
             or (root / "pytest.ini").exists()
         )
-        runner = "uv run" if (root / "uv.lock").exists() or (root / "pyproject.toml").exists() else "python3 -m"
+        uses_uv = (root / "uv.lock").exists()
         if has_pytest:
-            return ["uv run pytest"] if runner == "uv run" else ["python3 -m pytest"]
-        return ["uv run python -m compileall -q ."] if runner == "uv run" else ["python3 -m compileall -q ."]
+            return ["uv run pytest"] if uses_uv else ["python3 -m pytest"]
+        if python_info.get("test_files"):
+            tests_dir = root / "tests"
+            return ["python3 -m unittest discover -s tests"] if tests_dir.is_dir() else ["python3 -m unittest discover"]
+        return ["python3 -m compileall -q ."]
     for candidate in ("test", "build", "lint", "typecheck", "check"):
         if candidate in scripts:
             return [_node_script_command(root, candidate)]
@@ -2107,6 +2223,7 @@ def builder_failure_plan(args: Dict[str, Any], **_: Any) -> str:
     target_file = _diagnostic_file(first)
     target_path = str((root / target_file).resolve()) if target_file and not Path(target_file).is_absolute() else target_file
     recipe = _repair_recipe(language, first, command, zero_tests, timed_out)
+    language_policy = _language_stage_policy(root)
 
     read_files = [target_path] if target_path else []
     if language == "rust" and first.get("kind") == "rust-test-failure":
@@ -2134,6 +2251,7 @@ def builder_failure_plan(args: Dict[str, Any], **_: Any) -> str:
         "project_path": str(root),
         "summary": _diagnostic_summary(first),
         "language_profile": language,
+        "policy": language_policy,
         "command": command,
         "first_diagnostic": first,
         "diagnostics": diagnostics[:8],
@@ -2182,6 +2300,17 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
     python_info = _python_project_info(root)
     rust_info = _rust_project_info(root)
     go_info = _go_project_info(root)
+    env_artifacts = _environment_artifact_dirs(root)
+
+    if env_artifacts and focus in ("all", "python", "node", "javascript", "typescript", "testing", "build", "package"):
+        findings.append({
+            "severity": "warning",
+            "code": "staged-build-env-artifacts",
+            "file": ".",
+            "message": "Local dependency/environment artifact directories were detected inside the staged build.",
+            "evidence": f"directories={env_artifacts}",
+            "suggested_fix": "Do not create .venv/node_modules/install artifacts during the first verified slice; remove them from generated test projects and verify with bounded commands.",
+        })
 
     # --- 0) SwiftPM/XCTest structure risks ---
     if focus in ("all", "swift", "swiftpm", "testing", "build"):
@@ -2918,6 +3047,7 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
     summary = f"Ran {len(commands)} command(s); {len(failures)} failure(s)."
     next_required: List[str] = []
     if any_failure:
+        next_required.append("Call builder_failure_plan with this failed verifier result before patching.")
         next_required.append("Patch one concrete failure, then rerun builder_verify; do not add new features.")
         next_required.append("Make at most two focused patches before rerunning builder_verify; do not stack broad patch bursts.")
     else:
@@ -3011,6 +3141,8 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
         max_test_files = language_defaults["max_test_files"]
     if "max_source_dirs" not in args:
         max_source_dirs = language_defaults["max_source_dirs"]
+    language_policy = _language_stage_policy(root)
+    env_artifacts = _environment_artifact_dirs(root)
 
     code_exts = {
         ".c", ".cc", ".cpp", ".go", ".h", ".hpp", ".js", ".jsx",
@@ -3058,6 +3190,13 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "message": "One or more Go directories contain multiple package names.",
             "evidence": json.dumps(mixed_package_dirs, ensure_ascii=True, sort_keys=True),
         })
+    warnings: List[Dict[str, Any]] = []
+    if env_artifacts:
+        warnings.append({
+            "code": "environment-artifact-dirs",
+            "message": "Local dependency/environment artifact directories are present and should not be created during staged kernel builds.",
+            "evidence": f"directories={env_artifacts}",
+        })
 
     previous_guard: Dict[str, Any] = {}
     try:
@@ -3079,6 +3218,7 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "Stop adding files for this phase now.",
             "If verification has not passed for the current file set, run builder_verify before any more write_file or patch calls.",
             "If verification already passed, call builder_resume and builder_receipt, then defer the extra scope to a later phase.",
+            f"Follow the {language_policy['preset']} preset: {language_policy['repair']}",
         ])
     elif post_verify_pending:
         actions.extend([
@@ -3097,6 +3237,7 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "The current phase is within budget.",
             "The next source/test batch is capped at two files or three write_file/patch calls.",
             "After that capped batch, run builder_budget and builder_verify before expanding scope.",
+            f"Use the {language_policy['preset']} preset: {language_policy['verify']}.",
         ])
 
     guard: Dict[str, Any] = {}
@@ -3143,6 +3284,8 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "max_test_files": max_test_files,
             "max_source_dirs": max_source_dirs,
         },
+        "policy": language_policy,
+        "environment_artifacts": env_artifacts,
         "over_budget": bool(issues),
         "hard_stop": bool(issues),
         "allowed_next_tools": (
@@ -3153,6 +3296,7 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             else ["write_file", "patch", "builder_budget", "builder_verify"]
         ),
         "issues": issues,
+        "warnings": warnings,
         "actions": actions,
         "enforcement": {
             "state_recorded": state_recorded,
@@ -3186,6 +3330,7 @@ def builder_map(args: Dict[str, Any], **_: Any) -> str:
         })
 
     project_map = _build_project_map(root, max_files=max_files)
+    language_policy = _language_stage_policy(root)
     recommendations = [
         "Call builder_doctor before broad edits.",
         "Call builder_plan for a phase plan before making more than a small file batch.",
@@ -3196,14 +3341,19 @@ def builder_map(args: Dict[str, Any], **_: Any) -> str:
     if project_map.get("node"):
         manager = project_map.get("node", {}).get("package_manager") or "npm"
         recommendations.insert(0, f"Node project detected; builder_verify uses {manager} run <script> for package scripts when commands are omitted.")
+        recommendations.insert(1, "Node first slice should not run installs or create node_modules; use package.json, one module, and one node:test file.")
     if project_map.get("swift"):
         recommendations.insert(0, "SwiftPM detected; builder_verify defaults to swift build and swift test when commands are omitted.")
+        recommendations.insert(1, "Swift first slice should be one library target, one XCTest target, one implementation file, and one XCTest file.")
     if project_map.get("python"):
-        recommendations.insert(0, "Python project detected; builder_verify defaults to uv run pytest/python compileall or python3 -m pytest/compileall when commands are omitted.")
+        recommendations.insert(0, "Python project detected; builder_verify defaults to unittest for plain tests, pytest only when declared, and compileall when no tests exist.")
+        recommendations.insert(1, "Python stdlib first slice should not run pip/uv installs or create .venv; prefer unittest unless pytest is explicitly declared.")
     if project_map.get("rust"):
         recommendations.insert(0, "Cargo project detected; builder_verify defaults to cargo test when commands are omitted.")
+        recommendations.insert(1, "Rust first slice should prefer Cargo.toml plus src/lib.rs with inline tests; full cargo test is final proof.")
     if project_map.get("go"):
         recommendations.insert(0, "Go module detected; builder_verify defaults to go test ./... when commands are omitted.")
+        recommendations.insert(1, "Go first slice should be go.mod, one package implementation file, and one *_test.go file with one package name per directory.")
     if not project_map["scripts"] and not project_map.get("swift") and not project_map.get("python") and not project_map.get("rust") and not project_map.get("go"):
         recommendations.insert(0, "No package scripts found; create explicit build/test scripts before relying on verification.")
     elif not project_map.get("swift") and not project_map.get("python") and not project_map.get("rust") and not project_map.get("go") and "test" not in project_map["scripts"]:
@@ -3230,6 +3380,7 @@ def builder_map(args: Dict[str, Any], **_: Any) -> str:
             f"{project_map['file_counts']['source_files']} source file(s) sampled."
         ),
         "map": project_map,
+        "policy": language_policy,
         "recommended_next": recommendations,
         "state_recorded": state_recorded,
         "state_warning": state_warning,
@@ -3262,6 +3413,7 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
     python_info = project_map.get("python", {})
     rust_info = project_map.get("rust", {})
     go_info = project_map.get("go", {})
+    language_policy = _language_stage_policy(root)
     has_package = (root / "package.json").exists()
     has_swiftpm = bool(swift_info)
     has_python = bool(python_info)
@@ -3276,10 +3428,7 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
     elif has_go:
         verify_command = "builder_verify command: go test ./..."
     elif has_python:
-        if (root / "uv.lock").exists() or (root / "pyproject.toml").exists():
-            verify_command = "builder_verify command: uv run pytest or uv run python -m compileall -q ."
-        else:
-            verify_command = "builder_verify command: python3 -m pytest or python3 -m compileall -q ."
+        verify_command = f"builder_verify command: {language_policy['verify']}"
     else:
         for script in ("test", "build", "lint", "typecheck", "check"):
             if script in scripts:
@@ -3412,9 +3561,12 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
             "go": go_info,
             "is_newish": is_newish,
         },
+        "policy": language_policy,
         "phases": phases,
         "rules": [
             "Touch no more than the phase max_file_batch before verifying or recording state.",
+            f"Use the {language_policy['preset']} first slice: " + "; ".join(language_policy["first_slice"]),
+            "Forbidden in this first slice: " + "; ".join(language_policy["forbidden"]),
             "Hard stop after 4 file writes/patches in one phase: run builder_verify before expanding scope.",
             "Call builder_budget after each source/test batch and after successful verification; if it reports over_budget, stop adding scope and receipt/defer.",
             "After builder_budget reports within budget, the next source/test batch is still capped at two files or three write_file/patch calls before builder_verify.",

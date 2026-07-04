@@ -315,12 +315,113 @@ class BuilderDoctorToolTests(unittest.TestCase):
             "npm install",
             "pnpm add react",
             "python3 -m pip install pytest",
+            "python3 -m venv .venv",
+            "uv venv",
+            "uv pip install -e .",
             "cargo add anyhow",
             "go get example.com/pkg",
         ]
         for command in blocked:
             with self.subTest(command=command):
                 self.assertTrue(self.tools._is_blocked_verify_command(command))
+
+    def test_python_default_verifier_prefers_unittest_without_declared_pytest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname = \"plain-python\"\nversion = \"0.1.0\"\n",
+                encoding="utf-8",
+            )
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_core.py").write_text(
+                "import unittest\n\nclass CoreTests(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+
+            commands = self.tools._default_verify_commands(root, {}, {})
+
+        self.assertEqual(commands, ["python3 -m unittest discover -s tests"])
+
+    def test_python_default_verifier_uses_pytest_only_when_declared(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(
+                "[project]\n"
+                "name = \"pytest-python\"\n"
+                "version = \"0.1.0\"\n"
+                "dependencies = [\"pytest\"]\n",
+                encoding="utf-8",
+            )
+            (root / "uv.lock").write_text("", encoding="utf-8")
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_core.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
+
+            commands = self.tools._default_verify_commands(root, {}, {})
+
+        self.assertEqual(commands, ["uv run pytest"])
+
+    def test_terminal_dependency_env_mutation_is_blocked_inside_mapped_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname = \"install-noise\"\nversion = \"0.1.0\"\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+
+            uv_block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={"command": "uv pip install -e .", "workdir": str(root)},
+            )
+            pip_block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={"command": "python3 -m venv .venv", "workdir": str(root)},
+            )
+
+        self.assertIsNotNone(uv_block)
+        self.assertIn("dependency/environment mutation", uv_block["message"])
+        self.assertIsNotNone(pip_block)
+        self.assertIn("dependency/environment mutation", pip_block["message"])
+
+    def test_builder_budget_flags_environment_artifacts_and_returns_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname = \"artifact-noise\"\nversion = \"0.1.0\"\n",
+                encoding="utf-8",
+            )
+            (root / "artifact_noise.py").write_text("def ok():\n    return True\n", encoding="utf-8")
+            tests = root / "tests"
+            tests.mkdir()
+            (tests / "test_artifact_noise.py").write_text(
+                "import unittest\n\nclass NoiseTests(unittest.TestCase):\n    def test_ok(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            (root / ".venv").mkdir()
+
+            budget = json.loads(self.tools.builder_budget({"project_path": str(root)}))
+
+        self.assertFalse(budget["over_budget"])
+        self.assertFalse(budget["hard_stop"])
+        self.assertEqual(budget["policy"]["preset"], "python-stdlib-kernel")
+        self.assertIn(".venv", budget["environment_artifacts"])
+        self.assertIn("environment-artifact-dirs", {warning["code"] for warning in budget["warnings"]})
+
+    def test_builder_doctor_flags_install_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "package.json").write_text(
+                '{"name":"node-artifact-noise","type":"module","scripts":{"test":"node --test"}}\n',
+                encoding="utf-8",
+            )
+            (root / "node_modules").mkdir()
+
+            doctor = json.loads(self.tools.builder_doctor({"project_path": str(root)}))
+
+        self.assertTrue(doctor["success"])
+        self.assertIn("staged-build-env-artifacts", {finding["code"] for finding in doctor["findings"]})
 
     def test_rust_compile_only_verifier_gets_cargo_test_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
