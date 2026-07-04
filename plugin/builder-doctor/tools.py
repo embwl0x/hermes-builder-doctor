@@ -2168,6 +2168,12 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "max_source_dirs": max_source_dirs,
         },
         "over_budget": bool(issues),
+        "hard_stop": bool(issues),
+        "allowed_next_tools": (
+            ["builder_verify", "builder_resume", "builder_receipt"]
+            if issues
+            else ["write_file", "patch", "builder_budget", "builder_verify"]
+        ),
         "issues": issues,
         "actions": actions,
         "source_sample": [_rel(path, root) for path in source_files[:40]],
@@ -2527,6 +2533,14 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
         "update": "Updated",
         "replace": "Replaced",
     }[action]
+    next_required: List[str] = []
+    if action in {"update", "replace"} and "verification" in args:
+        next_required.extend([
+            "If the recorded verification passed, do not write or patch more files in this turn.",
+            "Call builder_budget with after_verify=true.",
+            "Then call builder_receipt and record deferred layers instead of expanding the build.",
+            "If the recorded verification failed, patch at most two concrete failures before rerunning builder_verify.",
+        ])
     return _json({
         "success": True,
         "project_path": str(root),
@@ -2534,6 +2548,7 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
         "state_exists": existed or action in {"update", "replace"},
         "summary": f"{summary_action} builder resume state.",
         "state": state,
+        "next_required": next_required,
     })
 
 

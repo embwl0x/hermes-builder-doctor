@@ -54,7 +54,13 @@ class StressTask:
     prompt: str
 
 
-def _task_catalog() -> dict[str, StressTask]:
+def _task_catalog(prompt_mode: str = "kernel") -> dict[str, StressTask]:
+    if prompt_mode == "giant":
+        return _giant_task_catalog()
+    return _kernel_task_catalog()
+
+
+def _kernel_task_catalog() -> dict[str, StressTask]:
     return {
         "node": StressTask(
             name="node",
@@ -212,6 +218,118 @@ dependencies. Stage 1 must include:
 Keep this as a verified kernel, not a networked service. Defer RPC, storage,
 CLI flags, dashboards, and distributed processes in builder_resume/receipt.
 After the first builder_verify call, fix only verification failures.
+""",
+        ),
+    }
+
+
+def _giant_task_catalog() -> dict[str, StressTask]:
+    tool_preamble = """
+Use Builder Doctor naturally and deliberately: create only the root folder first,
+then use builder_map, builder_plan, builder_doctor, builder_budget,
+builder_resume, builder_verify, and builder_receipt. This prompt is
+intentionally too large for a one-shot build. Your job is to convert it into
+staged verified layers. Complete the first useful verified kernel, record the
+deferred layers, and stop instead of trying to build the whole product in one
+burst. Call builder_budget after every 3 write_file/patch calls and immediately
+after successful builder_verify.
+"""
+    return {
+        "node": StressTask(
+            name="node",
+            label="Giant Node local-first automation studio",
+            root_name="node_automation_studio",
+            verify_commands=("npm test",),
+            prompt=f"""
+Build a complete local-first Node/ESM automation studio at {{project_root}}.
+
+{tool_preamble}
+
+The full product request includes: workflow DAG editor core, event-sourced run
+history, rule engine, plugin runtime, encrypted secrets vault abstraction,
+offline sync queue, import/export format, audit trail, CLI, HTTP API, dashboard
+adapters, and deterministic test fixtures. Use no external npm dependencies.
+
+For this run, prove the architecture with a verified kernel that meaningfully
+supports the larger product and records the rest as deferred layers.
+""",
+        ),
+        "swift": StressTask(
+            name="swift",
+            label="Giant Swift tactical macOS game foundation",
+            root_name="swift_tactical_game_foundation",
+            verify_commands=("swift test",),
+            prompt=f"""
+Build a complete SwiftPM foundation for a macOS tactical game at {{project_root}}.
+
+{tool_preamble}
+
+The full product request includes: map generation, entity/component state,
+turn scheduler, combat, status effects, deterministic replay, save/load model,
+AI tactics, scenario scripting, asset manifest validation, settings, campaign
+progression, and future SwiftUI/SpriteKit integration. Use no external package
+dependencies.
+
+For this run, prove the game foundation with a verified kernel that can support
+the larger app and records the rest as deferred layers.
+""",
+        ),
+        "python": StressTask(
+            name="python",
+            label="Giant Python offline observability workbench",
+            root_name="python_observability_workbench",
+            verify_commands=("python3 -m unittest discover -s tests",),
+            prompt=f"""
+Build a complete Python offline observability workbench at {{project_root}}.
+
+{tool_preamble}
+
+The full product request includes: log ingestion, metric rollups, trace spans,
+incident clustering, anomaly scoring, retention policy, plugin analyzers,
+checkpointed repair plans, CLI commands, report rendering, and portable archive
+import/export. Use only Python standard library dependencies.
+
+For this run, prove the workbench with a verified kernel that can support the
+larger product and records the rest as deferred layers.
+""",
+        ),
+        "rust": StressTask(
+            name="rust",
+            label="Giant Rust workflow orchestration kernel",
+            root_name="rust_orchestration_kernel",
+            verify_commands=("cargo test",),
+            prompt=f"""
+Build a complete Rust workflow orchestration kernel at {{project_root}}.
+
+{tool_preamble}
+
+The full product request includes: DAG compiler, resource scheduler, retries,
+cancellation propagation, lease/lock model, replay trace, durable checkpoint
+format, worker protocol abstraction, policy engine, CLI boundary, and future
+HTTP/runtime integration. Use only Rust standard library dependencies.
+
+For this run, prove the orchestration kernel with a verified layer that can
+support the larger product and records the rest as deferred layers.
+""",
+        ),
+        "go": StressTask(
+            name="go",
+            label="Giant Go distributed systems lab",
+            root_name="go_distributed_lab",
+            verify_commands=("go test ./...",),
+            prompt=f"""
+Build a complete Go distributed systems lab at {{project_root}}.
+
+{tool_preamble}
+
+The full product request includes: logical clock, node state, quorum protocols,
+lease simulation, partition model, deterministic event runner, invariant
+checker, scenario script parser, report generator, CLI boundary, persistence
+adapter boundary, and future RPC/dashboard integration. Use only Go standard
+library dependencies.
+
+For this run, prove the lab with a verified kernel that can support the larger
+product and records the rest as deferred layers.
 """,
         ),
     }
@@ -471,6 +589,10 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
     }
     terminal_verify_leaks: list[str] = []
     event_times: list[float] = []
+    writes_or_patches = 0
+    writes_before_first_verify = 0
+    budget_before_first_verify = 0
+    first_verify_seen = False
 
     verify_needles = [cmd.lower() for cmd in verify_commands]
     for event in events:
@@ -480,6 +602,14 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
             tool = str(event.get("tool") or "")
             preview = str(event.get("preview") or "")
             tool_counts[tool] = tool_counts.get(tool, 0) + 1
+            if tool in {"write_file", "patch"}:
+                writes_or_patches += 1
+                if not first_verify_seen:
+                    writes_before_first_verify += 1
+            if tool == "builder_budget" and not first_verify_seen:
+                budget_before_first_verify += 1
+            if tool == "builder_verify":
+                first_verify_seen = True
             if tool == "terminal" and any(needle in preview.lower() for needle in verify_needles):
                 terminal_verify_leaks.append(preview[:300])
         if event.get("event") == "tool.completed" and event.get("error"):
@@ -496,6 +626,15 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
         "required_tools_missing": sorted(required.difference(tool_counts)),
         "terminal_verify_leaks": terminal_verify_leaks,
         "max_event_gap_seconds": max(gaps) if gaps else 0,
+        "staging": {
+            "budget_used": tool_counts.get("builder_budget", 0) > 0,
+            "budget_before_first_verify": budget_before_first_verify,
+            "receipt_used": tool_counts.get("builder_receipt", 0) > 0,
+            "resume_used": tool_counts.get("builder_resume", 0) > 0,
+            "verify_used": tool_counts.get("builder_verify", 0) > 0,
+            "writes_or_patches": writes_or_patches,
+            "writes_before_first_verify": writes_before_first_verify,
+        },
     }
 
 
@@ -619,6 +758,7 @@ def run_task(
                 "out_tok_s": output_tps,
                 "missing_tools": event_summary["required_tools_missing"],
                 "terminal_verify_leaks": bool(event_summary["terminal_verify_leaks"]),
+                "staging": event_summary["staging"],
                 "deleted": deleted,
             },
             sort_keys=True,
@@ -629,13 +769,14 @@ def run_task(
 
 
 def parse_args() -> argparse.Namespace:
-    catalog = _task_catalog()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default=os.environ.get("HERMES_BASE_URL", "http://127.0.0.1:8644"))
     parser.add_argument("--model", default=os.environ.get("HERMES_MODEL", "step-3.7-flash"))
     parser.add_argument("--env-file", default=os.environ.get("HERMES_ENV_FILE", str(Path.home() / ".hermes" / ".env")))
     parser.add_argument("--workspace", default="")
     parser.add_argument("--output", default="")
+    parser.add_argument("--prompt-mode", choices=("kernel", "giant"), default="kernel")
+    catalog = _task_catalog("kernel")
     parser.add_argument("--tasks", default=",".join(catalog), help=f"Comma-separated tasks: {', '.join(catalog)}")
     parser.add_argument("--max-run-seconds", type=int, default=900)
     parser.add_argument("--verify-timeout", type=int, default=180)
@@ -650,7 +791,7 @@ def main() -> int:
     env_file = Path(args.env_file).expanduser()
     load_env_file(env_file)
     api_key = os.environ.get("API_SERVER_KEY", "")
-    catalog = _task_catalog()
+    catalog = _task_catalog(args.prompt_mode)
     selected: list[StressTask] = []
     for name in [item.strip() for item in args.tasks.split(",") if item.strip()]:
         if name not in catalog:
@@ -688,6 +829,7 @@ def main() -> int:
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "base_url": args.base_url,
             "model": args.model,
+            "prompt_mode": args.prompt_mode,
             "workspace": str(workspace),
             "results": results,
         }

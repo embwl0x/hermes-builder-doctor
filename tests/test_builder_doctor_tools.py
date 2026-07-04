@@ -81,10 +81,33 @@ class BuilderDoctorToolTests(unittest.TestCase):
 
         self.assertTrue(result["success"])
         self.assertTrue(result["over_budget"])
+        self.assertTrue(result["hard_stop"])
+        self.assertEqual(
+            result["allowed_next_tools"],
+            ["builder_verify", "builder_resume", "builder_receipt"],
+        )
         codes = {issue["code"] for issue in result["issues"]}
         self.assertIn("source-file-budget-exceeded", codes)
         self.assertIn("source-dir-budget-exceeded", codes)
         self.assertTrue(any("stop adding" in action.lower() for action in result["actions"]))
+
+    def test_builder_resume_nudges_receipt_after_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = json.loads(
+                self.tools.builder_resume(
+                    {
+                        "project_path": str(root),
+                        "action": "update",
+                        "verification": [{"command": "npm test", "exit_code": 0}],
+                    }
+                )
+            )
+
+        self.assertTrue(result["success"])
+        self.assertTrue(any("builder_budget" in item for item in result["next_required"]))
+        self.assertTrue(any("builder_receipt" in item for item in result["next_required"]))
+        self.assertTrue(any("do not write" in item.lower() for item in result["next_required"]))
 
     def test_verify_blocks_dependency_mutation_commands(self) -> None:
         blocked = [

@@ -86,6 +86,11 @@ API_SERVER_KEY=... ./scripts/stress_hermes_builds.py \
   --tasks node,python,go
 ```
 
+Use `--prompt-mode giant` to test whether an intentionally over-scoped product
+prompt is converted into staged verified layers instead of a one-shot build.
+The JSON report includes staging signals such as budget use, writes before the
+first verifier, receipt use, and raw terminal verifier leaks.
+
 The stress harness starts Hermes `/v1/runs`, streams tool events, independently
 verifies the generated projects, asks for one repair pass by default, writes a
 JSON report, and deletes generated projects unless `--keep-projects` is passed.

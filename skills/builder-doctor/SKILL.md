@@ -265,6 +265,8 @@ Returns JSON:
 - `counts` (object with source file, test file, and source directory totals)
 - `limits` (object with configured source/test/directory budgets)
 - `over_budget` (bool)
+- `hard_stop` (bool; true means do not write or patch more files before verify/receipt)
+- `allowed_next_tools` (array of permitted next tool names)
 - `issues` (array with budget or mixed-package warnings)
 - `actions` (array of next-step guidance)
 
