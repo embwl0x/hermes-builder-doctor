@@ -1,6 +1,7 @@
 # Safety And Packaging Notes
 
-This repository is intended to be safe to share or make public later.
+This repository is public and is intended to stay safe to clone, fork, inspect,
+and install into a Hermes agent.
 
 It should not contain:
 
@@ -19,7 +20,7 @@ project being built. That file records compact build flow metadata such as tool
 gates, verification commands, touched files, and receipt status. It should not
 store credentials, raw logs, or model transcripts.
 
-## Before Publishing Publicly
+## Before Releases Or Pull Requests
 
 Run:
 
@@ -27,6 +28,7 @@ Run:
 rg -n "/Users|API_SERVER|OPENAI|ANTHROPIC|HF_|hf_|gho_|token|secret|password|private_key" .
 python3 -m unittest discover -s tests
 python3 -m py_compile plugin/builder-doctor/tools.py plugin/builder-doctor/__init__.py
+gitleaks detect --source . --redact --no-git
 ```
 
 Review every search hit manually. Some words, such as `token` or `key`, may be

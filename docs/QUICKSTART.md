@@ -1,0 +1,130 @@
+# Quickstart
+
+This is the shortest path to install Builder Doctor into a Hermes agent and run
+one small verification.
+
+## What You Need
+
+- A working Hermes install.
+- Python 3.11 or newer.
+- `git`.
+- A Hermes agent or gateway to restart after install.
+
+No model weights, API keys, personas, or private Hermes configs are included in
+this repository.
+
+## 1. Clone
+
+```bash
+git clone https://github.com/embwl0x/hermes-builder-doctor.git
+cd hermes-builder-doctor
+```
+
+GitHub CLI also works:
+
+```bash
+gh repo clone embwl0x/hermes-builder-doctor
+cd hermes-builder-doctor
+```
+
+## 2. Install
+
+Default Hermes home:
+
+```bash
+./scripts/install.sh --verify
+```
+
+Custom Hermes home:
+
+```bash
+./scripts/install.sh --hermes-home "$HOME/.hermes" --verify
+```
+
+Replacing an existing install:
+
+```bash
+./scripts/install.sh --force --verify
+```
+
+The installer copies:
+
+- `plugin/builder-doctor` to your Hermes plugins directory.
+- `skills/builder-doctor` to your Hermes software-development skills directory.
+
+## 3. Restart Hermes
+
+Restart your Hermes desktop app, gateway, or service after installing. Builder
+Doctor is loaded at startup.
+
+After restart, the toolset should include:
+
+```text
+builder_map
+builder_doctor
+builder_budget
+builder_plan
+builder_resume
+builder_verify
+builder_failure_plan
+builder_receipt
+```
+
+## 4. Add Optional Guidance
+
+The install works without changing your model. For better behavior, merge the
+ideas from these files into your agent guidance:
+
+- `examples/SOUL.append.md`
+- `examples/config-snippet.yaml`
+
+Do not overwrite a working Hermes config. Treat the examples as copy/paste
+snippets to adapt.
+
+## 5. First Test Prompt
+
+Give your Hermes agent a small build first:
+
+```text
+Build a tiny deterministic task scheduler library in a new temporary project.
+Use Builder Doctor naturally. Create the project root, run builder_map and
+builder_plan, build only one verified kernel with one or two source files and
+focused tests, run builder_budget and builder_verify, repair with
+builder_failure_plan if needed, then finish with builder_resume and
+builder_receipt. Defer extra features.
+```
+
+Expected behavior:
+
+1. The agent maps and plans before broad edits.
+2. It builds a small first slice.
+3. It verifies through `builder_verify`, not repeated raw terminal test loops.
+4. It calls `builder_failure_plan` before repair patches.
+5. It finishes with `builder_receipt`.
+
+## 6. Optional Stress Test
+
+After the tools are visible in Hermes, run disposable stress tests:
+
+```bash
+./scripts/stress_hermes_builds.py \
+  --base-url http://127.0.0.1:8644 \
+  --model your-local-model-alias \
+  --prompt-mode probe \
+  --tasks node,python,go
+```
+
+The harness creates temporary projects, watches Hermes tool events,
+independently verifies the generated code, writes a JSON report, and deletes
+the projects by default.
+
+Use `--keep-projects` only when debugging a failed generated project.
+
+## Common Fixes
+
+- Tools not visible: restart Hermes again.
+- Existing install blocks install: use `./scripts/install.sh --force --verify`.
+- Agent writes too many files before testing: ask for one staged verified
+  kernel and use `--prompt-mode probe` in the stress harness.
+- Rust repairs only a targeted test: Builder Doctor requires full `cargo test`
+  before the stage can receipt.

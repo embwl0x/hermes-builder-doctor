@@ -5,7 +5,14 @@ Builder Doctor has two parts:
 1. A Hermes plugin at `plugin/builder-doctor`.
 2. A Hermes skill card at `skills/builder-doctor`.
 
-Install both into your Hermes home:
+Clone the public repository:
+
+```bash
+git clone https://github.com/embwl0x/hermes-builder-doctor.git
+cd hermes-builder-doctor
+```
+
+Install both parts into your Hermes home:
 
 ```bash
 ./scripts/install.sh --verify
@@ -28,6 +35,14 @@ To replace an older Builder Doctor install:
 ```
 
 The installer creates timestamped backups before replacing an existing install.
+
+Preview replacement without changing files:
+
+```bash
+./scripts/install.sh --force --dry-run
+```
+
+For the shortest first-time walkthrough, see `QUICKSTART.md`.
 
 ## Verify Registration
 

@@ -3,13 +3,21 @@
 This guide is for installing Builder Doctor into another Hermes agent, including
 agents backed by smaller local models.
 
+If you just want the shortest path, use `docs/QUICKSTART.md` first.
+
 ## 1. Download The Repository
 
 Using GitHub CLI:
 
 ```bash
-gh auth login
 gh repo clone embwl0x/hermes-builder-doctor
+cd hermes-builder-doctor
+```
+
+Using HTTPS:
+
+```bash
+git clone https://github.com/embwl0x/hermes-builder-doctor.git
 cd hermes-builder-doctor
 ```
 
@@ -46,6 +54,12 @@ Preview without changing files:
 ./scripts/install.sh --dry-run
 ```
 
+Preview replacement of an existing install without changing files:
+
+```bash
+./scripts/install.sh --force --dry-run
+```
+
 ## 3. Restart Hermes
 
 Restart the Hermes desktop app or gateway after install. Builder Doctor is loaded
@@ -77,6 +91,16 @@ If the toolset is not visible, run:
 
 That confirms files are installed and compile locally. If that passes but Hermes
 does not show the tools, restart Hermes again and inspect the Hermes plugin logs.
+
+## Troubleshooting
+
+- Toolset missing after install: restart Hermes again; plugins are loaded at
+  startup.
+- Existing install blocks the installer: rerun with `--force --verify`; the
+  installer creates a timestamped backup.
+- Custom Hermes home: pass `--hermes-home /path/to/hermes-home`.
+- Agent keeps building too much at once: use the smaller local model prompt
+  below and ask for one verified kernel, not the whole product.
 
 ## 4. Add Optional Agent Guidance
 
