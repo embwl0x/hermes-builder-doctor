@@ -1,6 +1,6 @@
 name: builder-doctor
 kind: standalone
-version: 0.5.5
+version: 0.5.8
 description: >
   Default guardrail tools for substantial software builds. Agents should use
   these naturally for app/project creation, repair, refactors, and verification:
@@ -11,7 +11,8 @@ description: >
   Go modules, and manager-aware Node/TypeScript projects. Complex-build plans
   use smaller verification batches and staged verified kernels so local models
   do not write large projects in one silent burst before testing, with stronger
-  language identity checks such as one Go package per directory.
+  language identity checks such as one Go package per directory and zero-test
+  verifier protection.
 author: Hermes Builder Doctor Contributors
 provides_tools:
   - builder_map

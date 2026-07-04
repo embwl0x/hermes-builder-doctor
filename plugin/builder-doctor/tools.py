@@ -1012,6 +1012,9 @@ def _verification_status(items: List[Any]) -> Optional[bool]:
     for item in items:
         if not isinstance(item, dict):
             continue
+        if item.get("zero_tests_detected"):
+            statuses.append(False)
+            continue
         if "success" in item and isinstance(item.get("success"), bool):
             statuses.append(bool(item.get("success")))
             continue
@@ -1091,31 +1094,11 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
                 "Call builder_budget, then builder_verify with the smallest relevant command before writing more."
             ),
         )
-    return None
 
-
-def builder_post_tool_call(
-    tool_name: str = "",
-    args: Any = None,
-    result: Any = None,
-    status: str = "",
-    **_: Any,
-) -> None:
-    """Hermes post_tool_call hook that updates Builder Doctor write counters."""
-    if tool_name not in {"write_file", "patch"}:
-        return
-    if _result_has_error(result, status=status):
-        return
-    root = _root_from_tool_args(tool_name, args)
-    if root is None:
-        return
-    state = _load_state(root)
-    guard = _guard_from_state(state)
     guard["writes_since_budget"] = _safe_int(guard.get("writes_since_budget", 0), 0, min_value=0) + 1
     guard["writes_since_verify"] = _safe_int(guard.get("writes_since_verify", 0), 0, min_value=0) + 1
     guard["language_profile"] = _detect_language_profile(root)
 
-    repair_remaining = guard.get("repair_patches_remaining")
     if guard.get("last_verify_success") is False and isinstance(repair_remaining, int):
         repair_remaining = max(0, repair_remaining - 1)
         guard["repair_patches_remaining"] = repair_remaining
@@ -1129,6 +1112,23 @@ def builder_post_tool_call(
         _save_state(root, state)
     except Exception:
         pass
+    return None
+
+
+def builder_post_tool_call(
+    tool_name: str = "",
+    args: Any = None,
+    result: Any = None,
+    status: str = "",
+    **_: Any,
+) -> None:
+    """Hermes post_tool_call hook retained for compatibility.
+
+    Write reservations are made in the pre hook so same-turn multi-tool bursts
+    cannot overrun the stage budget before the post hook sees the completed
+    writes.
+    """
+    return
 
 
 def _build_project_map(root: Path, max_files: int = 600) -> Dict[str, Any]:
@@ -1259,6 +1259,67 @@ def _is_blocked_verify_command(command: str) -> bool:
     return any(re.search(pattern, command) for pattern in blocked)
 
 
+def _is_test_verify_command(command: str) -> bool:
+    patterns = [
+        r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?test\b",
+        r"\b(?:vitest|jest|node\s+--test)\b",
+        r"\bswift\s+test\b",
+        r"\bcargo\s+test\b",
+        r"\bgo\s+test\b",
+        r"\buv\s+run\s+(?:pytest|python\s+-m\s+pytest)\b",
+        r"\bpython(?:3)?\s+-m\s+pytest\b",
+        r"(^|[;&|]\s*)pytest(?:\s|$)",
+    ]
+    return any(re.search(pattern, command) for pattern in patterns)
+
+
+def _zero_tests_detected(command: str, output: str) -> bool:
+    if not _is_test_verify_command(command):
+        return False
+
+    if re.search(r"(?m)^#\s*tests\s+0\s*$", output) or re.search(r"(?m)^1\.\.0\s*$", output):
+        return True
+    if re.search(r"\bNo tests found\b", output, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\bcollected\s+0\s+items\b", output) or re.search(r"\bno tests ran\b", output, flags=re.IGNORECASE):
+        return True
+    if re.search(r"\bExecuted\s+0\s+tests\b", output) or re.search(r"\b0\s+tests?\s+passed\b", output):
+        return True
+
+    if "cargo" in command and "test" in command:
+        counts = [int(match.group(1)) for match in re.finditer(r"(?m)^running\s+(\d+)\s+tests?\s*$", output)]
+        if counts and all(count == 0 for count in counts):
+            return True
+
+    if re.search(r"\bgo\s+test\b", command):
+        meaningful = any(re.match(r"^(ok|PASS)\b", line.strip()) for line in output.splitlines())
+        no_test_packages = any("[no test files]" in line for line in output.splitlines())
+        if no_test_packages and not meaningful:
+            return True
+
+    return False
+
+
+def _zero_test_failure(command: str, output_tail: str) -> Dict[str, Any]:
+    return {
+        "command": command,
+        "exit_code": 0,
+        "timed_out": False,
+        "output_tail": output_tail,
+        "zero_tests_detected": True,
+        "diagnostics": [
+            {
+                "kind": "zero-tests",
+                "message": "The verifier exited successfully but reported zero executed tests.",
+            }
+        ],
+        "suggested_next": [
+            "Add one focused test for the current kernel, then rerun builder_verify.",
+            "Keep the repair to the smallest behavior under test; do not widen the feature set before the test exists.",
+        ],
+    }
+
+
 def _default_verify_commands(root: Path, pkg: Dict[str, Any], scripts: Dict[str, Any]) -> List[str]:
     if (root / "Package.swift").exists():
         return ["swift build", "swift test"]
@@ -1282,6 +1343,22 @@ def _default_verify_commands(root: Path, pkg: Dict[str, Any], scripts: Dict[str,
         if candidate in scripts:
             return [_node_script_command(root, candidate)]
     return []
+
+
+def _ensure_required_verify_commands(root: Path, commands: List[str]) -> List[str]:
+    profile = _detect_language_profile(root)
+    normalized = list(commands)
+
+    if profile == "rust":
+        has_cargo_compile_check = any(
+            re.search(r"\bcargo\s+(?:check|build|clippy)\b", command)
+            for command in normalized
+        )
+        has_cargo_test = any(re.search(r"\bcargo\s+test\b", command) for command in normalized)
+        if has_cargo_compile_check and not has_cargo_test:
+            normalized.append("cargo test")
+
+    return normalized
 
 
 def _failure_guidance(command: str, output: str, timed_out: bool = False) -> Dict[str, Any]:
@@ -2246,6 +2323,8 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
                 "failures": [],
                 "summary": "No commands provided and no known default verifier found (SwiftPM, Cargo, Go module, Python project, or Node test/build/lint/typecheck/check script).",
             })
+    else:
+        commands = _ensure_required_verify_commands(root, commands)
 
     env = os.environ.copy()
     env["CI"] = "1"
@@ -2289,6 +2368,7 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
             lines = combined.splitlines()
             tail_lines = lines[-50:] if len(lines) > 50 else lines
             output_tail = "\n".join(tail_lines)
+            zero_tests_detected = exit_code == 0 and _zero_tests_detected(cmd, output_tail)
             if exit_code != 0:
                 any_failure = True
                 failure = {
@@ -2298,6 +2378,10 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
                     "output_tail": output_tail,
                 }
                 failure.update(_failure_guidance(cmd, output_tail))
+                failures.append(failure)
+            elif zero_tests_detected:
+                any_failure = True
+                failure = _zero_test_failure(cmd, output_tail)
                 failures.append(failure)
         except subprocess.TimeoutExpired as exc:
             timed_out = True
@@ -2332,8 +2416,12 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
             "timed_out": timed_out,
             "duration_seconds": duration,
             "output_tail": output_tail,
+            "zero_tests_detected": exit_code == 0 and not timed_out and _zero_tests_detected(cmd, output_tail),
         }
-        if exit_code != 0 or timed_out:
+        if record["zero_tests_detected"]:
+            record.update(_zero_test_failure(cmd, output_tail))
+            record["duration_seconds"] = duration
+        elif exit_code != 0 or timed_out:
             record.update(_failure_guidance(cmd, output_tail, timed_out=timed_out))
         results.append(record)
 
@@ -2356,7 +2444,8 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
             "exit_code": item.get("exit_code"),
             "timed_out": bool(item.get("timed_out")),
             "duration_seconds": item.get("duration_seconds", 0),
-            "success": item.get("exit_code") == 0 and not item.get("timed_out"),
+            "zero_tests_detected": bool(item.get("zero_tests_detected")),
+            "success": item.get("exit_code") == 0 and not item.get("timed_out") and not item.get("zero_tests_detected"),
             "recorded_at": _now_iso(),
         }
         for item in results

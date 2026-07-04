@@ -116,12 +116,11 @@ class BuilderDoctorToolTests(unittest.TestCase):
             self.assertTrue(map_result["state_recorded"])
 
             for index in range(3):
-                self.tools.builder_post_tool_call(
+                allow = self.tools.builder_pre_tool_call(
                     tool_name="write_file",
                     args={"path": str(root / f"file{index}.py")},
-                    result=json.dumps({"success": True}),
-                    status="ok",
                 )
+                self.assertIsNone(allow)
 
             block = self.tools.builder_pre_tool_call(
                 tool_name="write_file",
@@ -188,21 +187,9 @@ class BuilderDoctorToolTests(unittest.TestCase):
                 tool_name="patch",
                 args={"path": str(root / "repair.py")},
             )
-            self.tools.builder_post_tool_call(
-                tool_name="patch",
-                args={"path": str(root / "repair.py")},
-                result=json.dumps({"success": True}),
-                status="ok",
-            )
             second = self.tools.builder_pre_tool_call(
                 tool_name="patch",
                 args={"path": str(root / "repair.py")},
-            )
-            self.tools.builder_post_tool_call(
-                tool_name="patch",
-                args={"path": str(root / "repair.py")},
-                result=json.dumps({"success": True}),
-                status="ok",
             )
             third = self.tools.builder_pre_tool_call(
                 tool_name="patch",
@@ -226,6 +213,49 @@ class BuilderDoctorToolTests(unittest.TestCase):
         for command in blocked:
             with self.subTest(command=command):
                 self.assertTrue(self.tools._is_blocked_verify_command(command))
+
+    def test_rust_compile_only_verifier_gets_cargo_test_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                "[package]\nname = \"compile-only\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                encoding="utf-8",
+            )
+            commands = self.tools._ensure_required_verify_commands(root, ["cargo check"])
+
+        self.assertEqual(commands, ["cargo check", "cargo test"])
+
+    def test_zero_test_outputs_are_not_successful_verification(self) -> None:
+        node_output = "TAP version 13\n1..0\n# tests 0\n# pass 0\n"
+        cargo_output = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed\n\nrunning 0 tests\n"
+        go_output = "?  \texample.com/empty\t[no test files]\n"
+        self.assertTrue(self.tools._zero_tests_detected("node --test", node_output))
+        self.assertTrue(self.tools._zero_tests_detected("cargo test", cargo_output))
+        self.assertTrue(self.tools._zero_tests_detected("go test ./...", go_output))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tools.builder_map({"project_path": str(root)})
+            original_detector = self.tools._zero_tests_detected
+            try:
+                self.tools._zero_tests_detected = lambda _command, _output: True
+                verify = json.loads(
+                    self.tools.builder_verify(
+                        {
+                            "project_path": str(root),
+                            "commands": ["python3 -c 'print(\"empty verifier\")'"],
+                        }
+                    )
+                )
+            finally:
+                self.tools._zero_tests_detected = original_detector
+            state = json.loads((root / ".hermes-builder" / "state.json").read_text(encoding="utf-8"))
+
+        self.assertFalse(verify["success"])
+        self.assertTrue(verify["failures"][0]["zero_tests_detected"])
+        self.assertEqual(verify["failures"][0]["diagnostics"][0]["kind"], "zero-tests")
+        self.assertFalse(state["guard"]["last_verify_success"])
+        self.assertFalse(state["guard"]["receipt_required"])
 
 
 if __name__ == "__main__":

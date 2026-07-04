@@ -40,6 +40,8 @@ builder_resume and builder_receipt.
 
 - A successful `builder_verify` is enough; do not rerun the same verifier
   through a raw terminal command for reassurance.
+- A test command that reports zero tests is not a successful checkpoint. Add one
+  focused test for the current kernel, then rerun `builder_verify`.
 - If `builder_budget` says the slice is over budget, stop adding files,
   verify what exists, and defer the extra scope.
 - If `builder_budget` says the slice is within budget, still cap the next batch
@@ -52,5 +54,6 @@ builder_resume and builder_receipt.
 - Node/TypeScript: use the detected package manager and existing scripts.
 - SwiftPM: verify with `swift build` and `swift test`.
 - Python: prefer `uv run pytest` or compileall for no-test projects.
-- Rust: verify with `cargo test`.
+- Rust: verify with `cargo test`; compile-only checks such as `cargo check`
+  are not enough to receipt a completed stage.
 - Go: use one package name per directory and verify with `go test ./...`.

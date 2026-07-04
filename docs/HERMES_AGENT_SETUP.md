@@ -101,7 +101,8 @@ manifest/config, one or two core modules, and one focused test file. Use
 builder_budget after source/test batches and builder_verify for checks. After
 the first successful verification, stop adding features, call builder_resume
 with deferred layers, run builder_budget with after_verify set, then call
-builder_receipt.
+builder_receipt. If a test command reports zero tests, add one focused test and
+rerun builder_verify before calling the layer complete.
 ```
 
 This keeps the model out of long one-shot project generation and gives it a

@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.5.6
+version: 0.5.8
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -91,7 +91,7 @@ Call `builder_plan` before large builds. Include the user's objective. Follow th
 - avoid unrelated rewrites
 
 Hard gate for large builds:
-- After three `write_file`/`patch` calls in a phase, stop adding features and verify.
+- After three `write_file`/`patch` calls in a phase, the hook will block more edits until you verify.
 - Before writing source in a new language lane, choose the project identity and
   keep it stable: Node package type/import style, Swift target/product names,
   Python import root, Rust crate/module names, and Go package name per
@@ -143,6 +143,9 @@ Call `builder_verify` with the smallest command that exercises the changed code:
 - If `go.mod` exists, omitted `commands` runs `go test ./...`.
 - If Node package scripts exist, omitted `commands` uses the detected package manager (`npm`, `pnpm`, `yarn`, or `bun`) for `test`, `build`, `lint`, `typecheck`, or `check`.
 - It sets `CI=1` and `NO_COLOR=1` and tails output compactly.
+- Test commands that report zero executed tests are failed checkpoints, even if
+  the process exits with status 0. Add one focused test for the current kernel
+  before calling the layer verified.
 - JavaScript/TypeScript failures include structured compiler/file diagnostics when they can be parsed.
 - Swift failures include structured compiler or XCTest diagnostics when they can be parsed.
 - Python failures include structured pytest, traceback, and file/line diagnostics when they can be parsed.
@@ -185,6 +188,9 @@ Node/TypeScript repair loop:
 
 Rust/Cargo repair loop:
 - Prefer `cargo test` through `builder_verify`; use narrower Cargo commands only when the project already defines them and they are bounded.
+- `cargo check`, `cargo build`, and `cargo clippy` are compile checks, not final
+  behavior verification. For Rust projects, Builder Doctor adds `cargo test`
+  when those commands are used without a test gate.
 - Patch the first Rust compiler diagnostic before moving to later diagnostics.
 - For failed tests, read the failing test and implementation, then patch behavior rather than weakening assertions.
 - Do not run `cargo add`, `cargo install`, `cargo update`, or `cargo run` through `builder_verify`.
