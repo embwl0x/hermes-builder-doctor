@@ -7,6 +7,7 @@ import logging
 from .tools import (
     builder_budget,
     builder_doctor,
+    builder_failure_plan,
     builder_map,
     builder_post_tool_call,
     builder_pre_tool_call,
@@ -243,6 +244,49 @@ def register(ctx) -> None:
         handler=builder_verify,
         description="Preferred build/test verification tool; use instead of ad hoc terminal loops.",
         emoji="✅",
+    )
+    ctx.register_tool(
+        name="builder_failure_plan",
+        toolset="builder-doctor",
+        schema={
+            "name": "builder_failure_plan",
+            "description": "Use immediately after failed builder_verify before patching. Summarizes the first concrete failure, returns language-specific repair steps, and keeps the repair loop to one focused patch before rerunning the same verifier.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "Absolute path to the project root.",
+                    },
+                    "verification_result": {
+                        "type": "object",
+                        "description": "Optional full JSON result returned by builder_verify.",
+                    },
+                    "command": {
+                        "type": "string",
+                        "description": "Verifier command that failed, if not passing verification_result.",
+                    },
+                    "output_tail": {
+                        "type": "string",
+                        "description": "Compact verifier output tail, if not passing verification_result.",
+                    },
+                    "timed_out": {
+                        "type": "boolean",
+                        "description": "Whether the verifier timed out.",
+                        "default": False,
+                    },
+                    "zero_tests_detected": {
+                        "type": "boolean",
+                        "description": "Whether the verifier reported zero executed tests.",
+                        "default": False,
+                    },
+                },
+                "required": ["project_path"],
+            },
+        },
+        handler=builder_failure_plan,
+        description="Summarize a failed verifier and return a focused language repair plan.",
+        emoji="🧯",
     )
     ctx.register_tool(
         name="builder_receipt",

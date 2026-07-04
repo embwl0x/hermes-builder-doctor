@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tomllib
@@ -811,6 +812,8 @@ def _state_path(root: Path) -> Path:
 
 def _default_guard() -> Dict[str, Any]:
     return {
+        "root_anchor": "",
+        "root_anchor_set_at": "",
         "builder_verify_used": False,
         "last_verify_success": None,
         "last_verify_at": "",
@@ -818,11 +821,15 @@ def _default_guard() -> Dict[str, Any]:
         "writes_since_budget": 0,
         "writes_since_verify": 0,
         "repair_patches_remaining": None,
+        "failure_plan_required": False,
+        "last_failure_plan_at": "",
+        "last_failure_plan_command": "",
         "verify_required": False,
         "receipt_required": False,
         "last_budget_at": "",
         "last_budget_after_verify": False,
         "last_receipt_at": "",
+        "last_receipt_blocked_reason": "",
         "language_profile": "unknown",
     }
 
@@ -833,6 +840,13 @@ def _guard_from_state(state: Dict[str, Any]) -> Dict[str, Any]:
     if isinstance(guard, dict):
         merged.update(guard)
     return merged
+
+
+def _anchor_guard(root: Path, guard: Dict[str, Any]) -> Dict[str, Any]:
+    guard["root_anchor"] = str(root.resolve())
+    if not guard.get("root_anchor_set_at"):
+        guard["root_anchor_set_at"] = _now_iso()
+    return guard
 
 
 def _save_state(root: Path, state: Dict[str, Any]) -> None:
@@ -931,6 +945,47 @@ def _patch_file_candidates(patch_text: Any) -> List[str]:
     return candidates
 
 
+def _terminal_command_path_candidates(command: Any) -> List[str]:
+    if not isinstance(command, str):
+        return []
+    candidates: List[str] = []
+    patterns = (
+        r"(?:^|\s)>\s*([^\s;&|]+)",
+        r"(?:^|\s)>>\s*([^\s;&|]+)",
+        r"\btee\s+(?:-a\s+)?([^\s;&|]+)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, command):
+            value = match.group(1).strip().strip("\"'")
+            if value and value != "/dev/null":
+                candidates.append(value)
+    try:
+        for part in re.split(r"[;&|]+", command):
+            tokens = shlex.split(part)
+            if not tokens:
+                continue
+            executable = Path(tokens[0]).name
+            if executable not in {"rm", "cp", "mv", "touch"}:
+                continue
+            for token in tokens[1:]:
+                if token.startswith("-"):
+                    continue
+                candidates.append(token)
+    except Exception:
+        pass
+    return candidates
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+    except Exception:
+        return False
+
+
 def _find_builder_root(path: Path) -> Optional[Path]:
     start = path if path.is_dir() else path.parent
     for candidate in (start, *start.parents):
@@ -969,12 +1024,44 @@ def _root_from_tool_args(tool_name: str, args: Any) -> Optional[Path]:
             cwd = _expand_tool_path(os.getenv("TERMINAL_CWD") or os.getcwd())
             if cwd:
                 candidates.append(cwd)
+        for rel in _terminal_command_path_candidates(args.get("command")):
+            expanded = _expand_tool_path(rel, base=base)
+            if expanded:
+                candidates.append(expanded)
 
     for candidate in candidates:
         root = _find_builder_root(candidate)
         if root:
             return root
     return None
+
+
+def _boundary_candidate_paths(tool_name: str, args: Any, root: Path) -> List[Path]:
+    if not isinstance(args, dict):
+        return []
+
+    base = _expand_tool_path(args.get("workdir")) or root
+    candidates: List[Path] = []
+    for key in ("path", "file_path", "target", "destination"):
+        expanded = _expand_tool_path(args.get(key), base=base)
+        if expanded:
+            candidates.append(expanded)
+
+    if tool_name == "patch":
+        for rel in _patch_file_candidates(args.get("patch")):
+            expanded = _expand_tool_path(rel, base=base)
+            if expanded:
+                candidates.append(expanded)
+    elif tool_name == "terminal":
+        workdir = _expand_tool_path(args.get("workdir"))
+        if workdir:
+            candidates.append(workdir)
+        for rel in _terminal_command_path_candidates(args.get("command")):
+            expanded = _expand_tool_path(rel, base=base)
+            if expanded:
+                candidates.append(expanded)
+
+    return candidates
 
 
 def _is_raw_verifier_command(command: str) -> bool:
@@ -986,6 +1073,17 @@ def _is_raw_verifier_command(command: str) -> bool:
         r"\buv\s+run\s+(?:pytest|python\s+-m\s+pytest|python\s+-m\s+compileall)\b",
         r"\bpython(?:3)?\s+-m\s+(?:pytest|compileall)\b",
         r"(^|[;&|]\s*)pytest(?:\s|$)",
+    ]
+    return any(re.search(pattern, command) for pattern in patterns)
+
+
+def _is_terminal_file_mutation_command(command: str) -> bool:
+    patterns = [
+        r"(?s)\bcat\s+<<.+>",
+        r"(?s)\btee\s+(?:-a\s+)?[^\s]+",
+        r"(?s)\bprintf\b.+>",
+        r"(?s)\b(?:python3?|node|ruby|perl)\s+-\s*<<",
+        r"(?:^|[;&|]\s*)(?:rm|cp|mv|touch)\b",
     ]
     return any(re.search(pattern, command) for pattern in patterns)
 
@@ -1048,6 +1146,23 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
         return None
     state = _load_state(root)
     guard = _guard_from_state(state)
+    guard = _anchor_guard(root, guard)
+    state["guard"] = guard
+
+    anchored_root = _expand_tool_path(guard.get("root_anchor")) or root
+    for candidate in _boundary_candidate_paths(tool_name, args, anchored_root):
+        if not _is_within_root(candidate, anchored_root):
+            return _write_guard_block(
+                root,
+                state,
+                guard,
+                "root-boundary-blocked",
+                (
+                    "Builder Doctor blocked this tool call because it targets a path outside the mapped "
+                    f"project root ({anchored_root}). Stay inside the project root or create/map a separate "
+                    "project before editing there."
+                ),
+            )
 
     if tool_name == "terminal":
         command = str(args.get("command", "")) if isinstance(args, dict) else ""
@@ -1063,7 +1178,32 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
                     "builder_resume, builder_budget(after_verify=true), and builder_receipt on success."
                 ),
             )
+        if _is_terminal_file_mutation_command(command):
+            return _write_guard_block(
+                root,
+                state,
+                guard,
+                "terminal-file-mutation-blocked",
+                (
+                    "Builder Doctor blocked this terminal file mutation. Use write_file or patch "
+                    "for source/test/config edits so the project-root, write-budget, verification, and "
+                    "repair-plan guards can track the change."
+                ),
+            )
         return None
+
+    if guard.get("failure_plan_required"):
+        return _write_guard_block(
+            root,
+            state,
+            guard,
+            "failure-plan-required",
+            (
+                "Builder Doctor blocked this repair edit because the last builder_verify failed. "
+                "Call builder_failure_plan with the failed verifier output first, then patch only "
+                "the first diagnostic it identifies."
+            ),
+        )
 
     if guard.get("receipt_required"):
         return _write_guard_block(
@@ -1664,6 +1804,276 @@ def _failure_guidance(command: str, output: str, timed_out: bool = False) -> Dic
         "diagnostics": diagnostics[:20],
         "suggested_next": suggested_next[:4],
     }
+
+
+def _diagnostic_file(diagnostic: Dict[str, Any]) -> str:
+    value = diagnostic.get("file") or diagnostic.get("location") or ""
+    if isinstance(value, str) and ":" in value and not value.endswith((".swift", ".py", ".rs", ".go")):
+        return value.split(":", 1)[0]
+    return str(value or "")
+
+
+def _diagnostic_summary(diagnostic: Dict[str, Any]) -> str:
+    if not diagnostic:
+        return "No structured diagnostic was parsed; use the output tail and rerun the smallest verifier."
+    kind = str(diagnostic.get("kind", "diagnostic"))
+    message = str(diagnostic.get("message") or diagnostic.get("test") or diagnostic.get("code") or "")
+    location = _diagnostic_file(diagnostic)
+    if diagnostic.get("line"):
+        location = f"{location}:{diagnostic.get('line')}"
+    if location:
+        return f"{kind} at {location}: {message}".strip()
+    return f"{kind}: {message}".strip()
+
+
+def _language_from_command(root: Path, command: str) -> str:
+    profile = _detect_language_profile(root)
+    if profile != "unknown":
+        return profile
+    if re.search(r"\bcargo\b", command):
+        return "rust"
+    if re.search(r"\bswift\b", command):
+        return "swift"
+    if re.search(r"\bgo\s+test\b", command):
+        return "go"
+    if "pytest" in command or "python" in command:
+        return "python"
+    if re.search(r"\b(?:npm|pnpm|yarn|bun|node|vitest|jest)\b", command):
+        return "node"
+    return "unknown"
+
+
+def _repair_recipe(language: str, diagnostic: Dict[str, Any], command: str, zero_tests: bool, timed_out: bool) -> Dict[str, Any]:
+    kind = str(diagnostic.get("kind", ""))
+    if timed_out:
+        return {
+            "mode": "timeout",
+            "patch_policy": "Do not patch broadly from a timeout alone.",
+            "steps": [
+                "Shrink the verifier to the smallest package/test target that exercises the changed code.",
+                "Only increase timeout after a narrower command still times out for a known reason.",
+            ],
+        }
+    if zero_tests:
+        test_steps = {
+            "node": [
+                "Create an actual discovered Node test file such as tests/<feature>.test.js or tests/test.js using node:test.",
+                "Assert one core behavior from the current kernel; do not add new features.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+            "swift": [
+                "Create or update a real XCTest file under Tests/<Target>Tests with at least one test method.",
+                "Assert one core behavior from the current kernel; do not weaken package settings.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+            "python": [
+                "Create an actual discovered Python test file such as tests/test_<feature>.py, not only tests/__init__.py.",
+                "Use unittest.TestCase or test_ functions so the current command discovers at least one test.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+            "rust": [
+                "Create or update a real Rust test: an inline #[test] or a tests/<feature>.rs integration test.",
+                "Assert one core behavior from the current kernel; do not only compile the crate.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+            "go": [
+                "Create or update a real Go *_test.go file with at least one TestXxx function in the same package.",
+                "Assert one core behavior from the current kernel; keep one package name per directory.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+        }
+        return {
+            "mode": f"{language}-add-focused-test",
+            "patch_policy": "Add one real discovered test for the current kernel before adding features.",
+            "steps": test_steps.get(language, [
+                "Create or update the smallest real test file discovered by the current verifier.",
+                f"Rerun builder_verify with `{command}`.",
+            ]),
+        }
+
+    recipes: Dict[str, Dict[str, Any]] = {
+        "node": {
+            "mode": "node-focused-repair",
+            "patch_policy": "Patch one JS/TS diagnostic or one failing assertion; do not change package manager or install dependencies.",
+            "steps": [
+                "Read the reported file and the nearest test or call site.",
+                "Fix the first syntax/module/assertion problem only.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+        },
+        "swift": {
+            "mode": "swift-focused-repair",
+            "patch_policy": "Patch the first compiler/XCTest diagnostic; do not weaken XCTest assertions.",
+            "steps": [
+                "Read the failing Swift file at the reported line plus the XCTest if the failure is behavioral.",
+                "Fix target names/imports/types before behavior changes.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+        },
+        "python": {
+            "mode": "python-focused-repair",
+            "patch_policy": "Patch the first traceback, import error, or pytest failure; do not add dependencies.",
+            "steps": [
+                "Read the reported test/source file and the function in the traceback.",
+                "Fix behavior or import structure, not the test expectation unless the test is clearly wrong.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+        },
+        "rust": {
+            "mode": "rust-focused-repair",
+            "patch_policy": "Patch one compiler diagnostic or one failing test; do not create parallel replacement modules.",
+            "steps": [
+                "Read the reported .rs file and the failing test or caller.",
+                "For borrow/type errors, prefer the smallest signature/data-ownership fix.",
+                "For test failures, patch behavior rather than loosening assertions.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+        },
+        "go": {
+            "mode": "go-focused-repair",
+            "patch_policy": "Patch one package/compiler/test failure; keep one package name per directory.",
+            "steps": [
+                "If packages are mixed, fix declarations or move files before behavior work.",
+                "Read the first failing Go source/test file and patch that cause only.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+        },
+        "unknown": {
+            "mode": "generic-focused-repair",
+            "patch_policy": "Patch one concrete failure only; avoid scope expansion.",
+            "steps": [
+                "Read the first file named in the output tail.",
+                "Patch that diagnostic only.",
+                f"Rerun builder_verify with `{command}`.",
+            ],
+        },
+    }
+    recipe = recipes.get(language, recipes["unknown"]).copy()
+    if kind in {"go-mixed-packages"}:
+        recipe["mode"] = "go-package-layout-repair"
+        recipe["steps"] = [
+            "Fix package declarations or move files so each directory has exactly one package name.",
+            "Do not rewrite behavior until package setup passes.",
+            f"Rerun builder_verify with `{command}`.",
+        ]
+    elif kind in {"rust-test-failure", "xctest-failure", "pytest-failure", "go-test-failure"}:
+        recipe["mode"] = f"{language}-test-repair"
+    return recipe
+
+
+def _extract_failure_input(args: Dict[str, Any]) -> Dict[str, Any]:
+    verification_result = args.get("verification_result")
+    if isinstance(verification_result, str):
+        try:
+            verification_result = json.loads(verification_result)
+        except Exception:
+            verification_result = None
+
+    if isinstance(verification_result, dict):
+        failures = verification_result.get("failures")
+        if isinstance(failures, list) and failures:
+            first = failures[0] if isinstance(failures[0], dict) else {}
+            return {
+                "command": str(first.get("command") or args.get("command") or ""),
+                "output_tail": str(first.get("output_tail") or args.get("output_tail") or ""),
+                "timed_out": bool(first.get("timed_out")),
+                "zero_tests": bool(first.get("zero_tests_detected")),
+            }
+        commands = verification_result.get("commands")
+        if isinstance(commands, list):
+            for item in commands:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("exit_code") != 0 or item.get("timed_out") or item.get("zero_tests_detected"):
+                    return {
+                        "command": str(item.get("command") or args.get("command") or ""),
+                        "output_tail": str(item.get("output_tail") or args.get("output_tail") or ""),
+                        "timed_out": bool(item.get("timed_out")),
+                        "zero_tests": bool(item.get("zero_tests_detected")),
+                    }
+
+    return {
+        "command": str(args.get("command") or ""),
+        "output_tail": str(args.get("output_tail") or ""),
+        "timed_out": bool(args.get("timed_out", False)),
+        "zero_tests": bool(args.get("zero_tests_detected", False)),
+    }
+
+
+# ---------------------------------------------------------------------------
+# builder_failure_plan
+# ---------------------------------------------------------------------------
+
+def builder_failure_plan(args: Dict[str, Any], **_: Any) -> str:
+    project_path = args.get("project_path", "")
+    root = Path(project_path).resolve()
+    if not root.is_dir():
+        return _json({
+            "success": False,
+            "project_path": project_path,
+            "summary": "Project path does not exist or is not a directory.",
+            "repair_plan": {},
+        })
+
+    failure = _extract_failure_input(args)
+    command = failure["command"] or "builder_verify"
+    output_tail = failure["output_tail"]
+    timed_out = bool(failure["timed_out"])
+    zero_tests = bool(failure["zero_tests"]) or _zero_tests_detected(command, output_tail)
+    guidance = _zero_test_failure(command, output_tail) if zero_tests else _failure_guidance(command, output_tail, timed_out=timed_out)
+    diagnostics = guidance.get("diagnostics", [])
+    first = diagnostics[0] if diagnostics else {}
+    language = _language_from_command(root, command)
+    target_file = _diagnostic_file(first)
+    target_path = str((root / target_file).resolve()) if target_file and not Path(target_file).is_absolute() else target_file
+    recipe = _repair_recipe(language, first, command, zero_tests, timed_out)
+
+    read_files = [target_path] if target_path else []
+    if language == "rust" and first.get("kind") == "rust-test-failure":
+        read_files.append(str(root / "src"))
+    if language == "swift" and first.get("kind") == "xctest-failure":
+        read_files.append(str(root / "Tests"))
+
+    state_recorded = False
+    state_warning = ""
+    try:
+        state = _load_state(root)
+        guard = _anchor_guard(root, _guard_from_state(state))
+        guard["failure_plan_required"] = False
+        guard["last_failure_plan_at"] = _now_iso()
+        guard["last_failure_plan_command"] = command
+        guard["language_profile"] = language
+        state["guard"] = guard
+        _save_state(root, state)
+        state_recorded = True
+    except Exception as exc:
+        state_warning = f"Could not update failure-plan state: {exc}"
+
+    return _json({
+        "success": True,
+        "project_path": str(root),
+        "summary": _diagnostic_summary(first),
+        "language_profile": language,
+        "command": command,
+        "first_diagnostic": first,
+        "diagnostics": diagnostics[:8],
+        "repair_plan": {
+            "read_files": read_files[:4],
+            "patch_budget": "one focused patch, maximum two before rerunning builder_verify",
+            "patch_target": target_path,
+            "patch_policy": recipe["patch_policy"],
+            "steps": recipe["steps"],
+            "next_verify_command": command,
+            "stop_conditions": [
+                "Stop if the next builder_verify reports a different first failure; create a new builder_failure_plan.",
+                "Stop after two patches without a passing builder_verify and receipt the remaining failure.",
+            ],
+        },
+        "recipe": recipe,
+        "suggested_next": guidance.get("suggested_next", [])[:4],
+        "state_recorded": state_recorded,
+        "state_warning": state_warning,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -2458,7 +2868,7 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
             verification_records,
             max_items=120,
         )
-        guard = _guard_from_state(state)
+        guard = _anchor_guard(root, _guard_from_state(state))
         guard["builder_verify_used"] = True
         guard["last_verify_success"] = not any_failure
         guard["last_verify_at"] = _now_iso()
@@ -2470,9 +2880,11 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         if any_failure:
             guard["receipt_required"] = False
             guard["repair_patches_remaining"] = 2
+            guard["failure_plan_required"] = True
         else:
             guard["receipt_required"] = True
             guard["repair_patches_remaining"] = None
+            guard["failure_plan_required"] = False
         state["guard"] = guard
         _save_state(root, state)
         state_recorded = True
@@ -2592,7 +3004,7 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
     state_warning = ""
     try:
         state = _load_state(root)
-        guard = _guard_from_state(state)
+        guard = _anchor_guard(root, _guard_from_state(state))
         guard["last_budget_at"] = _now_iso()
         guard["last_budget_after_verify"] = after_verify
         guard["language_profile"] = _detect_language_profile(root)
@@ -2695,7 +3107,7 @@ def builder_map(args: Dict[str, Any], **_: Any) -> str:
     state_warning = ""
     try:
         state = _load_state(root)
-        guard = _guard_from_state(state)
+        guard = _anchor_guard(root, _guard_from_state(state))
         guard["language_profile"] = _detect_language_profile(root)
         state["guard"] = guard
         _save_state(root, state)
@@ -3000,23 +3412,25 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
                 incoming = [_clip(item, 1200) for item in incoming]
             state[state_key] = _append_unique(list(state.get(state_key, [])), incoming, max_items=max_items)
 
+        guard = _anchor_guard(root, _guard_from_state(state))
+        guard["language_profile"] = _detect_language_profile(root)
         if verification_incoming:
             status = _verification_status(verification_incoming)
-            guard = _guard_from_state(state)
             guard["builder_verify_used"] = True
             guard["last_verify_success"] = status
             guard["last_verify_at"] = _now_iso()
             guard["writes_since_budget"] = 0
             guard["writes_since_verify"] = 0
             guard["verify_required"] = False
-            guard["language_profile"] = _detect_language_profile(root)
             if status is True:
                 guard["receipt_required"] = True
                 guard["repair_patches_remaining"] = None
+                guard["failure_plan_required"] = False
             elif status is False:
                 guard["receipt_required"] = False
                 guard["repair_patches_remaining"] = 2
-            state["guard"] = guard
+                guard["failure_plan_required"] = True
+        state["guard"] = guard
 
         state["project_path"] = str(root)
         state["updated_at"] = _now_iso()
@@ -3037,7 +3451,7 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
         "replace": "Replaced",
     }[action]
     next_required: List[str] = []
-    guard = _guard_from_state(state)
+    guard = _anchor_guard(root, _guard_from_state(state))
     if action in {"update", "replace"} and "verification" in args:
         next_required.extend([
             "If the recorded verification passed, do not write or patch more files in this turn.",
@@ -3099,16 +3513,39 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         verification.append(item if isinstance(item, dict) else {"note": _clip(item, 2000)})
 
     warnings: List[str] = []
+    blocking_warnings: List[str] = []
+    guard = _anchor_guard(root, _guard_from_state(state))
+    latest_verification = next((item for item in reversed(verification) if isinstance(item, dict)), None)
+    latest_verification_status = _verification_status([latest_verification]) if latest_verification else None
+    zero_test_records = [
+        item for item in verification
+        if isinstance(item, dict) and item.get("zero_tests_detected")
+    ]
+
     if not state_exists:
         warnings.append("No .hermes-builder/state.json exists; call builder_resume during long builds.")
     if not verification:
-        warnings.append("No verification records supplied or saved; run builder_verify before final handoff.")
+        blocking_warnings.append("No verification records supplied or saved; run builder_verify before final handoff.")
+    elif guard.get("last_verify_success") is not True:
+        if guard.get("last_verify_success") is False:
+            blocking_warnings.append("Last recorded verification failed; run builder_failure_plan, patch one cause, and rerun builder_verify before final handoff.")
+        else:
+            blocking_warnings.append("No passing builder_verify checkpoint is recorded for this stage.")
+    elif latest_verification_status is False:
+        blocking_warnings.append("Latest verification record is not passing; rerun builder_verify after a focused repair before final handoff.")
+    if zero_test_records:
+        warnings.append("At least one verification record reported zero executed tests; a completed stage needs focused tests that actually run.")
+        if latest_verification and latest_verification.get("zero_tests_detected"):
+            blocking_warnings.append("Latest verification reported zero executed tests; add a focused test and rerun builder_verify.")
+    if guard.get("last_verify_success") is True and not guard.get("last_budget_after_verify"):
+        warnings.append("Passing verification is recorded, but builder_budget(after_verify=true) has not been recorded before receipt.")
     if project_map["scripts"] and not any(name in project_map["scripts"] for name in ("test", "build", "lint", "typecheck", "check")):
         warnings.append("package.json exists but has no common verification scripts.")
     if project_map.get("rust") and not project_map.get("rust", {}).get("test_files") and not project_map.get("rust", {}).get("has_inline_tests"):
         warnings.append("Rust project has no sampled tests; cargo test may only prove compilation.")
     if project_map.get("go") and not project_map.get("go", {}).get("test_files"):
         warnings.append("Go module has no sampled *_test.go files; go test may only prove compilation.")
+    ready_to_report = not blocking_warnings and not warnings
 
     receipt = {
         "project": project_map["name"],
@@ -3130,16 +3567,22 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         "verification": verification[:max_files],
         "available_scripts": project_map["scripts"],
         "git": git,
-        "warnings": warnings,
+        "warnings": blocking_warnings + warnings,
+        "blocking_warnings": blocking_warnings,
     }
 
     state_recorded = False
     state_warning = ""
     try:
-        guard = _guard_from_state(state)
-        guard["receipt_required"] = False
-        guard["verify_required"] = False
-        guard["writes_since_budget"] = 0
+        guard = _anchor_guard(root, _guard_from_state(state))
+        if ready_to_report:
+            guard["receipt_required"] = False
+            guard["verify_required"] = False
+            guard["writes_since_budget"] = 0
+            guard["failure_plan_required"] = False
+            guard["last_receipt_blocked_reason"] = ""
+        else:
+            guard["last_receipt_blocked_reason"] = "; ".join(blocking_warnings or warnings)[:1000]
         guard["last_receipt_at"] = _now_iso()
         guard["language_profile"] = _detect_language_profile(root)
         state["guard"] = guard
@@ -3152,12 +3595,13 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         "success": True,
         "project_path": str(root),
         "state_path": str(state_path),
-        "ready_to_report": not warnings,
+        "ready_to_report": ready_to_report,
+        "blocking_warnings": blocking_warnings,
         "summary": (
             f"Receipt for {project_map['name']}: "
             f"{len(receipt['files_touched'])} file(s), "
             f"{len(verification)} verification record(s), "
-            f"{len(warnings)} warning(s)."
+            f"{len(blocking_warnings) + len(warnings)} warning(s)."
         ),
         "receipt": receipt,
         "state_recorded": state_recorded,

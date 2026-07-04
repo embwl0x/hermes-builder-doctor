@@ -1,6 +1,6 @@
 name: builder-doctor
 kind: standalone
-version: 0.5.8
+version: 0.6.0
 description: >
   Default guardrail tools for substantial software builds. Agents should use
   these naturally for app/project creation, repair, refactors, and verification:
@@ -8,11 +8,12 @@ description: >
   work, check phase budgets, and produce a receipt before the final answer. Includes SwiftPM/XCTest
   mapping and verification guidance for macOS/Swift builds, plus Python/uv/pytest
   mapping and verification guidance for Python projects, Rust/Cargo packages,
-  Go modules, and manager-aware Node/TypeScript projects. Complex-build plans
-  use smaller verification batches and staged verified kernels so local models
-  do not write large projects in one silent burst before testing, with stronger
-  language identity checks such as one Go package per directory and zero-test
-  verifier protection.
+  Go modules, and manager-aware Node/TypeScript projects. Failed verification
+  can be summarized into focused language repair plans. Complex-build plans use
+  smaller verification batches and staged verified kernels so local models do
+  not write large projects in one silent burst before testing, with stronger
+  language identity checks such as one Go package per directory, zero-test
+  verifier protection, and project-root edit anchoring.
 author: Hermes Builder Doctor Contributors
 provides_tools:
   - builder_map
@@ -21,4 +22,5 @@ provides_tools:
   - builder_plan
   - builder_resume
   - builder_verify
+  - builder_failure_plan
   - builder_receipt

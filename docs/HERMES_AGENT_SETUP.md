@@ -63,6 +63,7 @@ builder_budget
 builder_plan
 builder_resume
 builder_verify
+builder_failure_plan
 builder_receipt
 ```
 
@@ -102,7 +103,8 @@ builder_budget after source/test batches and builder_verify for checks. After
 the first successful verification, stop adding features, call builder_resume
 with deferred layers, run builder_budget with after_verify set, then call
 builder_receipt. If a test command reports zero tests, add one focused test and
-rerun builder_verify before calling the layer complete.
+rerun builder_verify before calling the layer complete. If builder_verify fails,
+call builder_failure_plan before patching.
 ```
 
 This keeps the model out of long one-shot project generation and gives it a
@@ -124,8 +126,9 @@ Expected behavior:
 2. It writes only a small first slice.
 3. It checks phase size through `builder_budget`.
 4. It verifies through `builder_verify`.
-5. It follows hook blocks instead of forcing extra writes or raw terminal test loops.
-6. It finishes with `builder_receipt`.
+5. It calls `builder_failure_plan` before any repair patch if verification fails.
+6. It follows hook blocks instead of forcing extra writes or raw terminal test loops.
+7. It finishes with `builder_receipt`.
 
 ## Automated Stress Test
 
@@ -147,5 +150,6 @@ If `API_SERVER_KEY` is not already exported, the harness tries to read
 
 The harness creates disposable projects, watches Hermes tool events, runs
 independent verification commands, optionally asks for one repair pass, writes a
-JSON report, and deletes generated projects by default. Use `--keep-projects`
-when debugging a failure.
+JSON report, and deletes generated projects by default. On timeout or
+interruption it stops active Hermes runs and skips deletion unless Hermes reports
+a terminal run status. Use `--keep-projects` when debugging a failure.

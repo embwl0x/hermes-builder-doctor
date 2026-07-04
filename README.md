@@ -19,14 +19,15 @@ Hermes configuration, API keys, session logs, or machine-specific paths.
 - `builder_doctor`: static project risk scan for common setup mistakes.
 - `builder_budget`: phase/file budget check so models stop widening scope.
 - `builder_verify`: bounded build/test runner with compact diagnostics.
+- `builder_failure_plan`: focused language repair plan after a failed verifier.
 - `builder_resume`: project-local checkpoint state in `.hermes-builder/state.json`.
 - `builder_receipt`: final handoff summary with files, checks, and warnings.
 - Hermes hooks that enforce staging inside Builder Doctor-marked projects:
   three write/patch calls trigger a verification gate before more edits can run,
   passing verification
   requires budget/receipt before more edits, failed verification allows two
-  repair patches before another check, and raw terminal verifier loops are
-  redirected back to `builder_verify`.
+  repair patches before another check, edits are anchored to the mapped project
+  root, and raw terminal verifier loops are redirected back to `builder_verify`.
 
 Supported lanes:
 
@@ -100,6 +101,8 @@ first verifier, receipt use, and raw terminal verifier leaks.
 The stress harness starts Hermes `/v1/runs`, streams tool events, independently
 verifies the generated projects, asks for one repair pass by default, writes a
 JSON report, and deletes generated projects unless `--keep-projects` is passed.
+On timeout, SIGINT, or SIGTERM it sends Hermes a stop request for active runs
+and only deletes generated projects after Hermes reports a terminal run status.
 
 ## Safety Notes
 
@@ -107,10 +110,17 @@ JSON report, and deletes generated projects unless `--keep-projects` is passed.
   `pip install`, `cargo add`, and `go get`.
 - `builder_verify` treats zero-test output from test commands as a failed
   checkpoint, even when the command exits with status 0.
+- `builder_failure_plan` turns verifier failures into one-file repair guidance
+  before the next patch; after a failed verifier, write/patch calls are blocked
+  until a failure plan is recorded.
 - For Rust projects, compile-only verification such as `cargo check` is paired
   with `cargo test` so a completed stage cannot receipt without the test gate.
 - After `builder_map` marks a project, Builder Doctor's hooks enforce staged
-  build flow only inside that project's `.hermes-builder/state.json` boundary.
+  build flow only inside that project's `.hermes-builder/state.json` boundary
+  and block identifiable write/patch/terminal work outside the mapped root.
+- Terminal heredoc, `tee`, redirection, `rm`, `cp`, `mv`, and `touch` source
+  mutations are blocked inside mapped projects; use `write_file` or `patch` so
+  guardrails can count edits.
 - The tools do not run dev servers, watchers, or long-lived app processes.
 - Verification output is compacted and tailed to reduce context growth.
 - The skill encourages staged vertical slices instead of one-shot large systems.

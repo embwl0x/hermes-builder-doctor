@@ -125,7 +125,7 @@ Next steps:
   1. Rerun without --dry-run to install.
   2. Restart Hermes or its gateway so plugins and skills reload.
   3. Confirm the builder-doctor toolset exposes:
-     builder_map, builder_doctor, builder_budget, builder_plan, builder_resume, builder_verify, builder_receipt.
+     builder_map, builder_doctor, builder_budget, builder_plan, builder_resume, builder_verify, builder_failure_plan, builder_receipt.
 EOF
 else
   cat <<EOF
@@ -135,7 +135,7 @@ Installed Hermes Builder Doctor.
 Next steps:
   1. Restart Hermes or its gateway so plugins and skills reload.
   2. Confirm the builder-doctor toolset exposes:
-     builder_map, builder_doctor, builder_budget, builder_plan, builder_resume, builder_verify, builder_receipt.
+     builder_map, builder_doctor, builder_budget, builder_plan, builder_resume, builder_verify, builder_failure_plan, builder_receipt.
   3. For small local models, use the staged-kernel prompt pattern in docs/HERMES_AGENT_SETUP.md.
 EOF
 fi

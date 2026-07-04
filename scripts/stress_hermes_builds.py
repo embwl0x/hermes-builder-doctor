@@ -9,11 +9,13 @@ project directory by default.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import queue
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -54,6 +56,47 @@ class StressTask:
     prompt: str
 
 
+ACTIVE_RUNS: dict[str, tuple[str, str]] = {}
+ACTIVE_RUNS_LOCK = threading.Lock()
+SHUTDOWN_HANDLERS_INSTALLED = False
+
+
+def register_active_run(base_url: str, api_key: str, run_id: str) -> None:
+    with ACTIVE_RUNS_LOCK:
+        ACTIVE_RUNS[run_id] = (base_url, api_key)
+
+
+def unregister_active_run(run_id: str) -> None:
+    with ACTIVE_RUNS_LOCK:
+        ACTIVE_RUNS.pop(run_id, None)
+
+
+def stop_active_runs(reason: str = "shutdown") -> None:
+    with ACTIVE_RUNS_LOCK:
+        active = list(ACTIVE_RUNS.items())
+    for run_id, (base_url, api_key) in active:
+        try:
+            print(f"stopping active Hermes run {run_id} ({reason})", flush=True)
+            stop_run(base_url, api_key, run_id)
+        finally:
+            unregister_active_run(run_id)
+
+
+def install_shutdown_handlers() -> None:
+    global SHUTDOWN_HANDLERS_INSTALLED
+    if SHUTDOWN_HANDLERS_INSTALLED:
+        return
+    SHUTDOWN_HANDLERS_INSTALLED = True
+    atexit.register(stop_active_runs, "process-exit")
+
+    def _handle_signal(signum: int, _frame: Any) -> None:
+        stop_active_runs(f"signal-{signum}")
+        raise SystemExit(128 + signum)
+
+    signal.signal(signal.SIGINT, _handle_signal)
+    signal.signal(signal.SIGTERM, _handle_signal)
+
+
 def _task_catalog(prompt_mode: str = "kernel") -> dict[str, StressTask]:
     if prompt_mode == "giant":
         return _giant_task_catalog()
@@ -72,8 +115,9 @@ Build a substantial Node/ESM project at {project_root}.
 
 Use Builder Doctor deliberately: create only the root folder first, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
-builder_verify, and builder_receipt. This is a stress test of those tools, so
-every one of those builder_* tools should appear naturally.
+builder_verify, builder_failure_plan after failed verification, and
+builder_receipt. This is a stress test of those tools, so every relevant
+builder_* tool should appear naturally.
 Call builder_budget again after every 3 write_file/patch calls and immediately
 after successful builder_verify.
 
@@ -104,8 +148,9 @@ Build a substantial SwiftPM project at {project_root}.
 
 Use Builder Doctor deliberately: create only the root folder first, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
-builder_verify, and builder_receipt. This is a stress test of those tools, so
-every one of those builder_* tools should appear naturally.
+builder_verify, builder_failure_plan after failed verification, and
+builder_receipt. This is a stress test of those tools, so every relevant
+builder_* tool should appear naturally.
 Call builder_budget again after every 3 write_file/patch calls and immediately
 after successful builder_verify.
 
@@ -135,8 +180,9 @@ Build a substantial Python project at {project_root}.
 
 Use Builder Doctor deliberately: create only the root folder first, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
-builder_verify, and builder_receipt. This is a stress test of those tools, so
-every one of those builder_* tools should appear naturally.
+builder_verify, builder_failure_plan after failed verification, and
+builder_receipt. This is a stress test of those tools, so every relevant
+builder_* tool should appear naturally.
 Call builder_budget again after every 3 write_file/patch calls and immediately
 after successful builder_verify.
 
@@ -167,8 +213,9 @@ Build a substantial Rust project at {project_root}.
 
 Use Builder Doctor deliberately: create only the root folder first, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
-builder_verify, and builder_receipt. This is a stress test of those tools, so
-every one of those builder_* tools should appear naturally.
+builder_verify, builder_failure_plan after failed verification, and
+builder_receipt. This is a stress test of those tools, so every relevant
+builder_* tool should appear naturally.
 Call builder_budget again after every 3 write_file/patch calls and immediately
 after successful builder_verify.
 
@@ -199,8 +246,9 @@ Build a substantial Go module at {project_root}.
 
 Use Builder Doctor deliberately: create only the root folder first, then use
 builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
-builder_verify, and builder_receipt. This is a stress test of those tools, so
-every one of those builder_* tools should appear naturally.
+builder_verify, builder_failure_plan after failed verification, and
+builder_receipt. This is a stress test of those tools, so every relevant
+builder_* tool should appear naturally.
 Call builder_budget again after every 3 write_file/patch calls and immediately
 after successful builder_verify.
 
@@ -227,12 +275,12 @@ def _giant_task_catalog() -> dict[str, StressTask]:
     tool_preamble = """
 Use Builder Doctor naturally and deliberately: create only the root folder first,
 then use builder_map, builder_plan, builder_doctor, builder_budget,
-builder_resume, builder_verify, and builder_receipt. This prompt is
-intentionally too large for a one-shot build. Your job is to convert it into
-staged verified layers. Complete the first useful verified kernel, record the
-deferred layers, and stop instead of trying to build the whole product in one
-burst. Call builder_budget after every 3 write_file/patch calls and immediately
-after successful builder_verify.
+builder_resume, builder_verify, builder_failure_plan after failed verification,
+and builder_receipt. This prompt is intentionally too large for a one-shot
+build. Your job is to convert it into staged verified layers. Complete the
+first useful verified kernel, record the deferred layers, and stop instead of
+trying to build the whole product in one burst. Call builder_budget after every
+3 write_file/patch calls and immediately after successful builder_verify.
 """
     return {
         "node": StressTask(
@@ -445,6 +493,7 @@ def run_hermes_task(
 ) -> dict[str, Any]:
     started_at = time.time()
     run_id = start_run(base_url, api_key, model, session_id, prompt)
+    register_active_run(base_url, api_key, run_id)
     events: list[dict[str, Any]] = []
     stream_errors: list[str] = []
     stream_stop = threading.Event()
@@ -458,45 +507,57 @@ def run_hermes_task(
     printed_events = 0
     timed_out = False
     final_status: dict[str, Any] = {}
-    while True:
-        elapsed = time.time() - started_at
-        if progress:
-            for event in events[printed_events:]:
-                printed_events += 1
-                event_name = event.get("event")
-                if event_name == "tool.started":
-                    print(f"    tool {event.get('tool')}: {event.get('preview') or ''}"[:180], flush=True)
-                elif event_name in {"run.completed", "run.failed", "run.cancelled"}:
-                    print(f"    {event_name}", flush=True)
-        try:
-            final_status = poll_run(base_url, api_key, run_id)
-        except Exception as exc:
-            final_status = {"status_error": str(exc)}
-        status = final_status.get("status")
-        if status in {"completed", "failed", "cancelled"}:
-            break
-        if elapsed >= max_seconds:
-            timed_out = True
-            final_status["stop_result"] = stop_run(base_url, api_key, run_id)
-            time.sleep(3)
+    stop_result: dict[str, Any] = {}
+    try:
+        while True:
+            elapsed = time.time() - started_at
+            if progress:
+                for event in events[printed_events:]:
+                    printed_events += 1
+                    event_name = event.get("event")
+                    if event_name == "tool.started":
+                        print(f"    tool {event.get('tool')}: {event.get('preview') or ''}"[:180], flush=True)
+                    elif event_name in {"run.completed", "run.failed", "run.cancelled"}:
+                        print(f"    {event_name}", flush=True)
             try:
-                final_status = poll_run(base_url, api_key, run_id) | {
-                    "stop_result": final_status.get("stop_result")
-                }
-            except Exception:
-                pass
-            break
-        time.sleep(3)
-
-    stream_stop.set()
-    stream_thread.join(timeout=3)
+                final_status = poll_run(base_url, api_key, run_id)
+            except Exception as exc:
+                final_status = {"status_error": str(exc)}
+            status = final_status.get("status")
+            if status in {"completed", "failed", "cancelled"}:
+                break
+            if elapsed >= max_seconds:
+                timed_out = True
+                stop_result = stop_run(base_url, api_key, run_id)
+                for _ in range(5):
+                    time.sleep(1)
+                    try:
+                        final_status = poll_run(base_url, api_key, run_id)
+                    except Exception as exc:
+                        final_status = {"status_error": str(exc)}
+                    if final_status.get("status") in {"completed", "failed", "cancelled"}:
+                        break
+                break
+            time.sleep(3)
+    finally:
+        if final_status.get("status") not in {"completed", "failed", "cancelled"}:
+            if not stop_result:
+                stop_result = stop_run(base_url, api_key, run_id)
+            final_status["stop_result"] = stop_result
+        elif stop_result:
+            final_status["stop_result"] = stop_result
+        stream_stop.set()
+        stream_thread.join(timeout=3)
+        unregister_active_run(run_id)
     completed_at = time.time()
+    cleanup_safe = final_status.get("status") in {"completed", "failed", "cancelled"}
     return {
         "run_id": run_id,
         "session_id": session_id,
         "status": final_status.get("status", "unknown"),
         "status_payload": final_status,
         "timed_out": timed_out,
+        "cleanup_safe": cleanup_safe,
         "events": events,
         "stream_errors": stream_errors,
         "wall_seconds": round(completed_at - started_at, 3),
@@ -548,13 +609,37 @@ def verify_project(task: StressTask, project_root: Path, timeout: int) -> dict[s
         and ".hermes-builder" not in path.parts
     ]
     tests = count_tests(project_root)
+    for item in command_results:
+        item["zero_tests_detected"] = independent_zero_tests_detected(
+            str(item.get("command") or ""),
+            str(item.get("output_tail") or ""),
+            tests,
+        )
     return {
         "exists": project_root.exists(),
         "commands": command_results,
-        "passed": bool(project_root.exists()) and all(item["exit_code"] == 0 for item in command_results),
+        "passed": bool(project_root.exists())
+        and all(item["exit_code"] == 0 and not item.get("zero_tests_detected") for item in command_results),
         "source_file_count": len(source_files),
         "test_count": tests,
+        "zero_tests_detected": any(item.get("zero_tests_detected") for item in command_results),
     }
+
+
+def independent_zero_tests_detected(command: str, output_tail: str, test_count: int) -> bool:
+    lowered_command = command.lower()
+    if not any(marker in lowered_command for marker in ("test", "pytest", "unittest")):
+        return False
+    if test_count <= 0:
+        return True
+    lowered_output = output_tail.lower()
+    patterns = (
+        r"\bran 0 tests\b",
+        r"\b0 passed\b",
+        r"(?m)^\s*#?\s*tests[:\s]+0\b",
+        r"\brunning 0 tests\b",
+    )
+    return any(re.search(pattern, lowered_output) for pattern in patterns)
 
 
 def count_tests(project_root: Path) -> int:
@@ -657,7 +742,8 @@ def make_repair_prompt(project_root: Path, verification: dict[str, Any]) -> str:
     return f"""
 Repair the existing project at {project_root}.
 
-Use Builder Doctor tools. Start with builder_map and builder_doctor, patch only
+Use Builder Doctor tools. Start with builder_map and builder_doctor, call
+builder_failure_plan on the failed verifier output before patching, patch only
 the first concrete verification failure, rerun builder_verify with the same
 verification command, update builder_resume, call builder_budget, and finish
 with builder_receipt. Do not add new features.
@@ -728,9 +814,16 @@ def run_task(
     output_tps = round(usage["output_tokens"] / wall, 3) if wall > 0 else 0.0
 
     deleted = False
+    cleanup_skipped_reason = ""
+    cleanup_safe = bool(run.get("cleanup_safe", False)) and all(
+        bool(item.get("cleanup_safe", False)) for item in repair_runs
+    )
     if cleanup and project_root.exists():
-        shutil.rmtree(project_root)
-        deleted = True
+        if cleanup_safe:
+            shutil.rmtree(project_root)
+            deleted = True
+        else:
+            cleanup_skipped_reason = "Skipped deletion because at least one Hermes run did not stop cleanly."
 
     result = {
         "task": task.name,
@@ -744,6 +837,8 @@ def run_task(
         "combined_wall_seconds": round(wall, 3),
         "output_tokens_per_second_wall": output_tps,
         "deleted": deleted,
+        "cleanup_safe": cleanup_safe,
+        "cleanup_skipped_reason": cleanup_skipped_reason,
     }
     print(
         "    summary="
@@ -760,6 +855,8 @@ def run_task(
                 "terminal_verify_leaks": bool(event_summary["terminal_verify_leaks"]),
                 "staging": event_summary["staging"],
                 "deleted": deleted,
+                "cleanup_safe": cleanup_safe,
+                "cleanup_skipped": bool(cleanup_skipped_reason),
             },
             sort_keys=True,
         ),
@@ -787,6 +884,7 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    install_shutdown_handlers()
     args = parse_args()
     env_file = Path(args.env_file).expanduser()
     load_env_file(env_file)

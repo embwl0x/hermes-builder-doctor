@@ -146,6 +146,14 @@ class BuilderDoctorToolTests(unittest.TestCase):
                 )
             )
             state = json.loads((root / ".hermes-builder" / "state.json").read_text(encoding="utf-8"))
+            budget = json.loads(
+                self.tools.builder_budget(
+                    {
+                        "project_path": str(root),
+                        "after_verify": True,
+                    }
+                )
+            )
             write_block = self.tools.builder_pre_tool_call(
                 tool_name="write_file",
                 args={"path": str(root / "extra.py")},
@@ -163,6 +171,7 @@ class BuilderDoctorToolTests(unittest.TestCase):
 
         self.assertTrue(verify["success"])
         self.assertTrue(verify["state_recorded"])
+        self.assertTrue(budget["success"])
         self.assertTrue(state["guard"]["receipt_required"])
         self.assertIsNotNone(write_block)
         self.assertIn("builder_verify has already passed", write_block["message"])
@@ -183,6 +192,18 @@ class BuilderDoctorToolTests(unittest.TestCase):
                     }
                 )
             )
+            blocked_before_plan = self.tools.builder_pre_tool_call(
+                tool_name="patch",
+                args={"path": str(root / "repair.py")},
+            )
+            plan = json.loads(
+                self.tools.builder_failure_plan(
+                    {
+                        "project_path": str(root),
+                        "verification_result": verify,
+                    }
+                )
+            )
             first = self.tools.builder_pre_tool_call(
                 tool_name="patch",
                 args={"path": str(root / "repair.py")},
@@ -197,6 +218,9 @@ class BuilderDoctorToolTests(unittest.TestCase):
             )
 
         self.assertFalse(verify["success"])
+        self.assertIsNotNone(blocked_before_plan)
+        self.assertIn("builder_failure_plan", blocked_before_plan["message"])
+        self.assertTrue(plan["success"])
         self.assertIsNone(first)
         self.assertIsNone(second)
         self.assertIsNotNone(third)
@@ -256,6 +280,151 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertEqual(verify["failures"][0]["diagnostics"][0]["kind"], "zero-tests")
         self.assertFalse(state["guard"]["last_verify_success"])
         self.assertFalse(state["guard"]["receipt_required"])
+
+    def test_failure_plan_rust_compiler_guides_single_patch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                "[package]\nname = \"repair-plan\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+                encoding="utf-8",
+            )
+            result = json.loads(
+                self.tools.builder_failure_plan(
+                    {
+                        "project_path": str(root),
+                        "verification_result": {
+                            "success": False,
+                            "failures": [
+                                {
+                                    "command": "cargo test",
+                                    "exit_code": 101,
+                                    "timed_out": False,
+                                    "zero_tests_detected": False,
+                                    "output_tail": (
+                                        "error[E0308]: mismatched types\n"
+                                        "  --> src/core.rs:12:5\n"
+                                        "   |\n"
+                                        "12 |     value\n"
+                                    ),
+                                }
+                            ],
+                        },
+                    }
+                )
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["language_profile"], "rust")
+        self.assertEqual(result["first_diagnostic"]["kind"], "rust-compiler")
+        self.assertIn("src/core.rs", result["repair_plan"]["patch_target"])
+        self.assertIn("one", result["repair_plan"]["patch_budget"].lower())
+        self.assertIn("cargo test", result["repair_plan"]["next_verify_command"])
+
+    def test_failure_plan_zero_tests_requires_discovered_python_test_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "pyproject.toml").write_text(
+                "[project]\nname = \"zero-tests\"\nversion = \"0.1.0\"\n",
+                encoding="utf-8",
+            )
+
+            result = json.loads(
+                self.tools.builder_failure_plan(
+                    {
+                        "project_path": str(root),
+                        "command": "python3 -m unittest discover -s tests",
+                        "output_tail": "Ran 0 tests in 0.000s\n\nOK\n",
+                        "zero_tests_detected": True,
+                    }
+                )
+            )
+
+        steps = " ".join(result["repair_plan"]["steps"])
+        self.assertTrue(result["success"])
+        self.assertEqual(result["recipe"]["mode"], "python-add-focused-test")
+        self.assertIn("tests/test_", steps)
+        self.assertIn("not only tests/__init__.py", steps)
+
+    def test_root_boundary_blocks_outside_write_when_project_context_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            outside = Path(tmp) / "outside.py"
+            self.tools.builder_map({"project_path": str(root)})
+
+            block = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"project_path": str(root), "path": str(outside)},
+            )
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["action"], "block")
+        self.assertIn("outside the mapped project root", block["message"])
+
+    def test_terminal_file_write_is_blocked_inside_mapped_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "src" / "generated.go"
+            self.tools.builder_map({"project_path": str(root)})
+
+            block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "command": f"cat <<'EOF' > {target}\npackage main\nEOF",
+                },
+            )
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["action"], "block")
+        self.assertIn("terminal file mutation", block["message"])
+
+    def test_terminal_rm_is_blocked_inside_mapped_project(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "src" / "generated.go"
+            target.parent.mkdir()
+            target.write_text("package main\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+
+            block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "command": f"rm -rf {target}",
+                },
+            )
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["action"], "block")
+        self.assertIn("terminal file mutation", block["message"])
+
+    def test_receipt_not_ready_after_zero_test_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tools.builder_map({"project_path": str(root)})
+            self.tools.builder_resume(
+                {
+                    "project_path": str(root),
+                    "action": "update",
+                    "verification": [
+                        {
+                            "command": "cargo test",
+                            "exit_code": 0,
+                            "timed_out": False,
+                            "zero_tests_detected": True,
+                            "success": False,
+                        }
+                    ],
+                }
+            )
+
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+            state = json.loads((root / ".hermes-builder" / "state.json").read_text(encoding="utf-8"))
+
+        self.assertTrue(receipt["success"])
+        self.assertFalse(receipt["ready_to_report"])
+        self.assertTrue(receipt["blocking_warnings"])
+        self.assertIn("zero executed tests", " ".join(receipt["receipt"]["warnings"]))
+        self.assertTrue(state["guard"]["last_receipt_blocked_reason"])
 
 
 if __name__ == "__main__":

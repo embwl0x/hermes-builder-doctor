@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.5.8
+version: 0.6.0
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -53,6 +53,7 @@ marked by `.hermes-builder/state.json`.
 - After a Python traceback, import error, pytest failure, or pyproject/uv mismatch.
 - After a Rust compiler/test failure or Cargo workspace layout issue.
 - After a Go compiler/test failure, mixed-package issue, or go.mod mismatch.
+- Immediately after a failed `builder_verify`, before patching from the output.
 - When the agent is about to run the full test/build suite repeatedly to find an issue.
 - When ESM, moduleResolution, workspace links, or vitest config is suspected.
 - Before final response, so the user gets files changed, verification, and remaining limits.
@@ -101,7 +102,8 @@ Hard gate for large builds:
 - After each source/test batch, call `builder_budget`. If it reports `over_budget: true`, do not add files; verify the current slice, receipt it, and defer the extra scope.
 - When `builder_budget` reports the phase is still within budget, the next batch is still capped at two files or three write/patch calls before another `builder_budget`/`builder_verify`.
 - After the first `builder_verify`, do not expand scope. Fix only verification failures.
-- If verification still fails after one focused fix pass, call `builder_receipt` and report the remaining failure instead of continuing indefinitely.
+- When `builder_verify` fails, call `builder_failure_plan` with the failed verifier result before patching. Follow its first diagnostic and one-file repair guidance.
+- If verification still fails after one focused fix pass, call `builder_failure_plan` again for the new first failure or call `builder_receipt` and report the remaining failure instead of continuing indefinitely.
 - Before context grows past roughly 45k tokens, force a receipt/checkpoint instead of starting another feature pass.
 - A completed vertical slice is better than an unfinished full wish list.
 - Large builds are not complete until `builder_receipt` has been called after the final successful verification.
@@ -158,7 +160,9 @@ Verification discipline:
 - Once `builder_verify` has been used for a project, continue verification through `builder_verify`; do not switch to the raw terminal for the same test/build/check command.
 - Use raw terminal only for bounded setup/introspection that `builder_verify` is not meant to do, such as creating the initial project folder, listing files, or reading command availability.
 - When `builder_verify` succeeds, it records the verification automatically. Do not rerun the same command through raw terminal for reassurance. Call `builder_resume` only if checkpoint notes are needed, then `builder_budget` with `after_verify: true`, then `builder_receipt`.
-- If `builder_verify` fails twice on the same command, call `builder_doctor`, read the first structured diagnostic, patch one cause, and rerun `builder_verify` once.
+- If `builder_verify` fails, call `builder_failure_plan`, read the first structured diagnostic, patch one cause, and rerun `builder_verify` once.
+- After a failed `builder_verify`, Builder Doctor hooks block write/patch repair edits until `builder_failure_plan` is called for that project.
+- If `builder_verify` fails twice on the same command, call `builder_doctor` as a broader scan, then return to `builder_failure_plan` before the next patch.
 - If a repair needs more than two patches before verification, stop patching and rerun `builder_verify` or produce `builder_receipt` with the remaining failure.
 - If a terminal tool guardrail fires during verification, do not repeat the terminal command. Switch back to `builder_verify`, checkpoint with `builder_resume`, or finish with `builder_receipt`.
 - Let `builder_verify` record successful verification automatically; use `builder_resume` for objective, phase, decisions, deferred layers, and any manual verification notes.
@@ -217,6 +221,7 @@ Call `builder_receipt` before final response. Use it to report:
 - known limitations or next steps
 
 If `builder_receipt` warns that no verification exists, run `builder_verify` or explicitly state why verification is unavailable.
+If `builder_receipt` returns `ready_to_report: false`, do not treat the stage as complete. Address `blocking_warnings` first, usually by running `builder_failure_plan`, a focused patch, `builder_verify`, and then `builder_budget` with `after_verify: true`.
 
 ## Reporting rules
 
@@ -327,6 +332,28 @@ Returns JSON:
 - `failures` (array with the same fields)
 - `summary` (string)
 
+### builder_failure_plan
+
+Inputs:
+- `project_path` (string, required)
+- `verification_result` (object, optional; pass the full JSON result from `builder_verify` when available)
+- `command` (string, optional)
+- `output_tail` (string, optional)
+- `timed_out` (bool, optional)
+- `zero_tests_detected` (bool, optional)
+
+Returns JSON:
+- `success` (bool)
+- `project_path` (string)
+- `summary` (string first-failure summary)
+- `language_profile` (string)
+- `command` (string)
+- `first_diagnostic` (object)
+- `diagnostics` (array)
+- `repair_plan` (object with `read_files`, `patch_budget`, `patch_target`, `patch_policy`, `steps`, `next_verify_command`, and `stop_conditions`)
+- `recipe` (object with language-specific repair mode and steps)
+- `suggested_next` (array)
+
 ### builder_receipt
 
 Inputs:
@@ -339,6 +366,7 @@ Returns JSON:
 - `project_path` (string)
 - `state_path` (string)
 - `ready_to_report` (bool)
+- `blocking_warnings` (array)
 - `summary` (string)
 - `receipt` (object with files, decisions, verification, scripts, git status, warnings)
 
@@ -351,9 +379,11 @@ Returns JSON:
 - Do not start dev servers or long-lived watchers.
 - Do not rerun the full test suite after every tiny change.
 - Do not use raw terminal as a duplicate substitute for a failing `builder_verify` command.
+- Do not create, overwrite, delete, move, or copy source/test/config files with terminal heredocs, `tee`, shell redirection, `rm`, `cp`, `mv`, or `touch` inside a mapped project; use `write_file` or `patch`.
 - Do not write a large project in one uninterrupted burst before the first verifier.
 - Do not try to satisfy every requested feature in a single response when the task is explicitly complex; build a verified kernel and document next layers.
 - Do not use `swift run` as verification for GUI/game apps; prefer `swift build` and `swift test`.
 - Do not skip `builder_resume` during a long build.
 - Do not skip `builder_receipt` before final response.
+- Do not patch from a failed verifier without first calling `builder_failure_plan`.
 - Do not edit project source files through `builder_map`, `builder_doctor`, `builder_plan`, or `builder_receipt`; Builder Doctor tools may write only their project-local `.hermes-builder/state.json`.

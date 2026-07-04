@@ -40,6 +40,7 @@ builder_budget
 builder_plan
 builder_resume
 builder_verify
+builder_failure_plan
 builder_receipt
 ```
 

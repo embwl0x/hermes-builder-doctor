@@ -14,10 +14,11 @@ process boundaries.
    - one focused test file
 5. Run `builder_budget`.
 6. Run `builder_verify`.
-7. Fix only the first concrete failure.
-8. Save state with `builder_resume`.
-9. Run `builder_budget` again with `after_verify: true`.
-10. Finish the current layer with `builder_receipt`.
+7. If verification fails, run `builder_failure_plan` before patching.
+8. Fix only the first concrete failure.
+9. Save state with `builder_resume`.
+10. Run `builder_budget` again with `after_verify: true`.
+11. Finish the current layer with `builder_receipt`.
 
 ## Why This Helps
 
@@ -42,6 +43,8 @@ builder_resume and builder_receipt.
   through a raw terminal command for reassurance.
 - A test command that reports zero tests is not a successful checkpoint. Add one
   focused test for the current kernel, then rerun `builder_verify`.
+- A failed verifier should go through `builder_failure_plan` before patching so
+  the model fixes one language-specific failure instead of guessing broadly.
 - If `builder_budget` says the slice is over budget, stop adding files,
   verify what exists, and defer the extra scope.
 - If `builder_budget` says the slice is within budget, still cap the next batch
