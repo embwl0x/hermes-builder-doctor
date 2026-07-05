@@ -5,6 +5,24 @@ Builder Doctor has two parts:
 1. A Hermes plugin at `plugin/builder-doctor`.
 2. A Hermes skill card at `skills/builder-doctor`.
 
+## Ask A Hermes Agent To Install It
+
+You can point a Hermes agent at this public repo and ask it to install Builder
+Doctor for itself:
+
+```text
+Install Hermes Builder Doctor from
+https://github.com/embwl0x/hermes-builder-doctor.
+
+Clone or update the repo into a normal workspace you control. Install it into
+this Hermes home with ./scripts/install.sh --verify. Restart or reload this
+Hermes gateway/app so the plugin and skill are visible, then run
+./scripts/verify-install.sh. Do not change model aliases, personas, production
+configs, or API keys unless I explicitly ask.
+```
+
+## Manual Install
+
 Clone the public repository:
 
 ```bash

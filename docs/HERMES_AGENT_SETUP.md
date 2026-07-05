@@ -5,6 +5,25 @@ agents backed by smaller local models.
 
 If you just want the shortest path, use `docs/QUICKSTART.md` first.
 
+## Ask The Agent To Do It
+
+For a normal agent-driven install, tell the target Hermes agent:
+
+```text
+Install Hermes Builder Doctor from
+https://github.com/embwl0x/hermes-builder-doctor.
+
+Clone or update the repo into a normal workspace you control. Install it into
+this Hermes home with ./scripts/install.sh --verify. Restart or reload this
+Hermes gateway/app so the plugin and skill are visible, then run
+./scripts/verify-install.sh. Do not change model aliases, personas, production
+configs, or API keys unless I explicitly ask.
+```
+
+The agent should use its own Hermes home, gateway restart method, and available
+model aliases. It should not assume the host, port, model name, or local paths
+from another machine.
+
 ## 1. Download The Repository
 
 Using GitHub CLI:

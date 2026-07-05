@@ -49,6 +49,20 @@ tests/                      Standard-library smoke tests
 
 ## Quick Install
 
+If you are driving this through a Hermes agent, you can point the agent at this
+repo and ask it to do the install:
+
+```text
+Install Hermes Builder Doctor from
+https://github.com/embwl0x/hermes-builder-doctor.
+
+Clone or update the repo into a normal workspace you control, run
+./scripts/install.sh --verify for this Hermes home, restart or reload the Hermes
+gateway/app so the plugin is visible, then run ./scripts/verify-install.sh.
+Do not change model aliases, personas, production configs, or API keys unless I
+explicitly ask.
+```
+
 Clone the repository:
 
 ```bash

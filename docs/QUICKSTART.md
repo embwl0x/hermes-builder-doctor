@@ -13,6 +13,21 @@ one small verification.
 No model weights, API keys, personas, or private Hermes configs are included in
 this repository.
 
+## Agent-Driven Install
+
+If you are using a Hermes agent to install this for you, give it this prompt:
+
+```text
+Install Hermes Builder Doctor from
+https://github.com/embwl0x/hermes-builder-doctor.
+
+Clone or update the repo into a normal workspace you control. Install it into
+this Hermes home with ./scripts/install.sh --verify. Restart or reload this
+Hermes gateway/app so the plugin and skill are visible, then run
+./scripts/verify-install.sh. Do not change model aliases, personas, production
+configs, or API keys unless I explicitly ask.
+```
+
 ## 1. Clone
 
 ```bash
