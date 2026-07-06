@@ -217,6 +217,8 @@ builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
 builder_verify, builder_failure_plan after failed verification, and
 builder_receipt. This is a stress test of those tools, so every relevant
 builder_* tool should appear naturally.
+Pass this full requested objective into builder_plan's objective field and
+builder_resume's objective field so receipt can check scope coverage.
 Call builder_budget again after every 3 write_file/patch calls and immediately
 after successful builder_verify.
 
@@ -251,6 +253,8 @@ builder_map, builder_plan, builder_doctor, builder_budget, builder_resume,
 builder_verify, builder_failure_plan after failed verification, and
 builder_receipt. This is a stress test of those tools, so every relevant
 builder_* tool should appear naturally.
+Pass this full requested objective into builder_plan's objective field and
+builder_resume's objective field so receipt can check scope coverage.
 Call builder_budget again after every 3 write_file/patch calls and immediately
 after successful builder_verify.
 
@@ -387,6 +391,8 @@ build. Your job is to convert it into staged verified layers. Complete the
 first useful verified kernel, record the deferred layers, and stop instead of
 trying to build the whole product in one burst. Call builder_budget after every
 3 write_file/patch calls and immediately after successful builder_verify.
+Pass this full requested objective into builder_plan's objective field and
+builder_resume's objective field so receipt can check scope coverage.
 """
     return {
         "node": StressTask(

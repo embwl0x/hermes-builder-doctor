@@ -25,6 +25,15 @@ class BuilderDoctorToolTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.tools = load_tools_module()
 
+    def record_objective(self, root: Path, objective: str = "Sample build objective") -> None:
+        self.tools.builder_resume(
+            {
+                "project_path": str(root),
+                "action": "update",
+                "objective": objective,
+            }
+        )
+
     def test_go_map_reports_mixed_package_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -114,6 +123,7 @@ class BuilderDoctorToolTests(unittest.TestCase):
             root = Path(tmp)
             map_result = json.loads(self.tools.builder_map({"project_path": str(root)}))
             self.assertTrue(map_result["state_recorded"])
+            self.record_objective(root)
 
             for index in range(3):
                 allow = self.tools.builder_pre_tool_call(
@@ -130,6 +140,25 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIsNotNone(block)
         self.assertEqual(block["action"], "block")
         self.assertIn("write budget", block["message"])
+
+    def test_source_edit_requires_saved_objective_after_state_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = json.loads(self.tools.builder_plan({"project_path": str(root)}))
+            blocked = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "Package.swift")},
+            )
+            self.record_objective(root, "Build a Swift tactical kernel with tests.")
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "Package.swift")},
+            )
+
+        self.assertTrue(plan["state_recorded"])
+        self.assertIsNotNone(blocked)
+        self.assertIn("no saved objective", blocked["message"])
+        self.assertIsNone(allowed)
 
     def test_builder_budget_hard_stops_at_language_source_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -152,6 +181,7 @@ class BuilderDoctorToolTests(unittest.TestCase):
             root = Path(tmp)
             (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
             self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root)
 
             verify = json.loads(
                 self.tools.builder_verify(
@@ -268,6 +298,7 @@ class BuilderDoctorToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root)
             verify = json.loads(
                 self.tools.builder_verify(
                     {

@@ -87,7 +87,9 @@ For a brand-new project path that does not exist yet:
 
 ### 2. Plan big work in phases
 
-Call `builder_plan` before large builds. Include the user's objective. Follow the returned phase gates:
+Call `builder_plan` before large builds. Include the user's objective in the
+`objective` field, using the concrete feature nouns from the user's request.
+Follow the returned phase gates:
 - keep file batches small
 - verify after each phase
 - update resume state after each phase
@@ -95,6 +97,9 @@ Call `builder_plan` before large builds. Include the user's objective. Follow th
 
 Hard gate for large builds:
 - After three `write_file`/`patch` calls in a phase, the hook will block more edits until you verify.
+- Once `.hermes-builder/state.json` exists, Builder Doctor blocks source edits
+  until `objective` is recorded. If this fires, call `builder_resume` with
+  `action: "update"` and the concrete user request in `objective`.
 - Before writing source in a new language lane, choose the project identity and
   keep it stable: Node package type/import style, Swift target/product names,
   Python import root, Rust crate/module names, and Go package name per
@@ -104,6 +109,10 @@ Hard gate for large builds:
 - After each source/test batch, call `builder_budget`. If it reports `over_budget: true`, do not add files; verify the current slice, receipt it, and defer the extra scope.
 - When `builder_budget` reports the phase is still within budget, the next batch is still capped at two files or three write/patch calls before another `builder_budget`/`builder_verify`.
 - After the first `builder_verify`, do not expand scope. Fix only verification failures.
+- A compile/check-only success is not final if source exists but focused tests are missing. Add a real discovered test file and rerun the language test verifier before `builder_receipt`.
+- A passing verifier is not final if `builder_budget` or `builder_receipt`
+  reports an under-covered `scope_contract`. Add one small source/test batch
+  for the missing objective anchors, then rerun `builder_verify`.
 - When `builder_verify` fails, call `builder_failure_plan` with the failed verifier result before patching. Follow its first diagnostic and one-file repair guidance.
 - If verification still fails after one focused fix pass, call `builder_failure_plan` again for the new first failure or call `builder_receipt` and report the remaining failure instead of continuing indefinitely.
 - Before context grows past roughly 45k tokens, force a receipt/checkpoint instead of starting another feature pass.
@@ -133,6 +142,8 @@ Work on the findings one category at a time. Do not run a full test suite until 
 Call `builder_resume` during long builds:
 - `action: "update"` after each completed phase
 - record `objective`, `phase`, `completed`, `next_steps`, `decisions`, `files`, and `verification`
+- keep `objective` aligned with the user request, not only the smaller slice
+  you happened to implement
 - `action: "read"` after compaction, interruption, or uncertainty
 
 The state file is project-local: `.hermes-builder/state.json`.
@@ -163,6 +174,12 @@ Verification discipline:
 - Once `builder_verify` has been used for a project, continue verification through `builder_verify`; do not switch to the raw terminal for the same test/build/check command.
 - Use raw terminal only for bounded setup/introspection that `builder_verify` is not meant to do, such as creating the initial project folder, listing files, or reading command availability.
 - When `builder_verify` succeeds, it records the verification automatically. Do not rerun the same command through raw terminal for reassurance. Call `builder_resume` only if checkpoint notes are needed, then `builder_budget` with `after_verify: true`, then `builder_receipt`.
+- If `builder_verify` reports `missing_required_tests`, add the focused test phase next. Do not use `builder_receipt` as final handoff until the test verifier passes.
+- If `builder_budget` reports `scope_phase_required` or `builder_receipt`
+  blocks on under-covered scope, patch the current kernel toward the listed
+  missing anchors and add matching tests before trying receipt again.
+- If a write is blocked with `objective-required`, record the objective through
+  `builder_resume` before retrying the write.
 - If `builder_verify` fails, call `builder_failure_plan`, read the first structured diagnostic, patch one cause, and rerun `builder_verify` once.
 - After a failed `builder_verify`, Builder Doctor hooks block write/patch repair edits until `builder_failure_plan` is called for that project.
 - If `builder_verify` fails twice on the same command, call `builder_doctor` as a broader scan, then return to `builder_failure_plan` before the next patch.
@@ -226,7 +243,7 @@ Call `builder_receipt` before final response. Use it to report:
 - known limitations or next steps
 
 If `builder_receipt` warns that no verification exists, run `builder_verify` or explicitly state why verification is unavailable.
-If `builder_receipt` returns `ready_to_report: false`, do not treat the stage as complete. Address `blocking_warnings` first, usually by running `builder_failure_plan`, a focused patch, `builder_verify`, and then `builder_budget` with `after_verify: true`.
+If `builder_receipt` returns `ready_to_report: false`, do not treat the stage as complete. Address `blocking_warnings` first. If tests are missing, add the focused test phase and rerun `builder_verify`; if objective scope is under-covered, add one small source/test batch for the listed missing anchors and rerun `builder_verify`; if a verifier failed, run `builder_failure_plan`, patch one cause, rerun `builder_verify`, and then call `builder_budget` with `after_verify: true`.
 
 ## Reporting rules
 
@@ -286,6 +303,8 @@ Returns JSON:
 - `hard_stop` (bool; true means do not write or patch more files before verify/receipt)
 - `allowed_next_tools` (array of permitted next tool names)
 - `issues` (array with budget or mixed-package warnings)
+- `scope_contract` (object with saved objective anchors, matched anchors, and
+  missing anchors when the stage may be too thin)
 - `actions` (array of next-step guidance)
 - `enforcement` (object with write counters, verify/receipt gates, and repair-patch allowance)
 
@@ -304,6 +323,8 @@ Returns JSON:
 - `state_recorded` (bool; true when verification was written to `.hermes-builder/state.json`)
 - `state_warning` (string)
 - `project_signals` (object)
+- `scope_contract` (object; when enough objective anchors exist,
+  `builder_receipt` will require the verified corpus to cover a minimum subset)
 - `phases` (array with phase gates)
 - `rules` (array of strings)
 

@@ -61,6 +61,81 @@ SOURCE_EXTS = {
 
 TEST_MARKERS = (".test.", ".spec.", "__tests__", "/tests/", "/test/")
 
+OBJECTIVE_STOPWORDS = {
+    "about",
+    "above",
+    "after",
+    "again",
+    "available",
+    "before",
+    "bounded",
+    "build",
+    "builder",
+    "call",
+    "check",
+    "code",
+    "command",
+    "complete",
+    "configured",
+    "create",
+    "current",
+    "dependency",
+    "directory",
+    "external",
+    "file",
+    "files",
+    "first",
+    "focus",
+    "focused",
+    "foundation",
+    "full",
+    "handoff",
+    "include",
+    "includes",
+    "integration",
+    "kernel",
+    "larger",
+    "library",
+    "local",
+    "macos",
+    "main",
+    "model",
+    "module",
+    "must",
+    "naturally",
+    "objective",
+    "package",
+    "path",
+    "phase",
+    "project",
+    "prompt",
+    "record",
+    "repair",
+    "root",
+    "run",
+    "script",
+    "source",
+    "stage",
+    "staged",
+    "structure",
+    "swift",
+    "swiftpm",
+    "target",
+    "test",
+    "tests",
+    "tool",
+    "tools",
+    "use",
+    "using",
+    "verified",
+    "verify",
+    "workflow",
+    "write",
+    "with",
+    "without",
+    "xctest",
+}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -161,6 +236,123 @@ def _walk_project_files(root: Path, max_files: int = 1000) -> List[Path]:
             if len(files) >= max_files:
                 return files
     return files
+
+
+def _identifier_text(text: str) -> str:
+    text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
+    return text.replace("_", " ").replace("-", " ")
+
+
+def _objective_contract_text(text: str) -> str:
+    """Keep the part of an objective that describes this stage, not deferrals."""
+    text = str(text or "")
+    pieces = re.split(r"\b(?:defer|deferred|future|later)\b", text, maxsplit=1, flags=re.IGNORECASE)
+    return pieces[0]
+
+
+def _canonical_objective_term(token: str) -> str:
+    token = token.lower().strip()
+    if token.endswith("ies") and len(token) > 5:
+        return token[:-3] + "y"
+    if token.endswith("sses"):
+        return token[:-2]
+    if token.endswith("s") and len(token) > 4 and not token.endswith(("ss", "us")):
+        return token[:-1]
+    return token
+
+
+def _objective_term_variants(term: str) -> set[str]:
+    variants = {term}
+    if term.endswith("ies") and len(term) > 5:
+        variants.add(term[:-3] + "y")
+    if term.endswith("s") and len(term) > 4 and not term.endswith(("ss", "us")):
+        variants.add(term[:-1])
+    if term.endswith("ical") and len(term) > 6:
+        variants.add(term[:-2])
+    if term.endswith("tion") and len(term) > 7:
+        variants.add(term[:-3])
+    return {value for value in variants if len(value) >= 4}
+
+
+def _extract_objective_terms(text: str, max_terms: int = 40) -> List[str]:
+    """Extract concrete scope anchors from a user objective.
+
+    These are intentionally simple lexical anchors. They help local models avoid
+    declaring a tiny verified slice complete when the objective named several
+    core domain concepts.
+    """
+    contract = _identifier_text(_objective_contract_text(text))
+    raw_terms = re.findall(r"[a-zA-Z][a-zA-Z0-9]{3,}", contract.lower())
+    terms: List[str] = []
+    seen: set[str] = set()
+    for raw in raw_terms:
+        term = _canonical_objective_term(raw)
+        if term in OBJECTIVE_STOPWORDS or term.isdigit():
+            continue
+        if term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+        if len(terms) >= max_terms:
+            break
+    return terms
+
+
+def _project_scope_corpus(root: Path, max_files: int = 160, max_chars: int = 240000) -> str:
+    parts: List[str] = []
+    total = 0
+    include_exts = SOURCE_EXTS | {".toml", ".yaml", ".yml", ".md"}
+    for path in _walk_project_files(root, max_files=max_files):
+        if path.suffix not in include_exts:
+            continue
+        rel = _rel(path, root)
+        text = _read_text(path) or ""
+        chunk = _identifier_text(f"{rel}\n{text[:12000]}").lower()
+        parts.append(chunk)
+        total += len(chunk)
+        if total >= max_chars:
+            break
+    return "\n".join(parts)
+
+
+def _scope_contract_status(root: Path, state: Dict[str, Any], project_map: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    objective = str(state.get("objective") or "")
+    terms = _extract_objective_terms(objective)
+    if len(terms) < 6:
+        return {
+            "required": False,
+            "ready": True,
+            "reason": "No concrete saved objective with enough scope anchors.",
+            "objective_terms": terms,
+            "matched_terms": [],
+            "missing_terms": [],
+            "min_matches": 0,
+        }
+
+    corpus = _project_scope_corpus(root)
+    matched: List[str] = []
+    missing: List[str] = []
+    for term in terms:
+        variants = _objective_term_variants(term)
+        if any(re.search(rf"\b{re.escape(variant)}\b", corpus) for variant in variants):
+            matched.append(term)
+        else:
+            missing.append(term)
+
+    min_matches = min(8, max(4, int(round(len(terms) * 0.35))))
+    ready = len(matched) >= min_matches
+    return {
+        "required": True,
+        "ready": ready,
+        "reason": (
+            f"Matched {len(matched)}/{len(terms)} objective anchor(s); "
+            f"minimum for this staged receipt is {min_matches}."
+        ),
+        "objective_terms": terms,
+        "matched_terms": matched[:40],
+        "missing_terms": missing[:40],
+        "min_matches": min_matches,
+    }
 
 
 def _detect_package_manager(root: Path) -> str:
@@ -333,6 +525,19 @@ def _swift_target_names(package_text: str, target_kind: str) -> List[str]:
     return sorted(set(re.findall(pattern, package_text)))
 
 
+def _swift_target_path_overrides(package_text: str, target_kind: str) -> Dict[str, str]:
+    """Best-effort map of SwiftPM target names to explicit path overrides."""
+    pattern = rf"\.{re.escape(target_kind)}\s*\(\s*name:\s*\"([^\"]+)\"(?P<body>.*?)(?=\n\s*\.(?:target|executableTarget|testTarget)\s*\(|\n\s*\]\s*\)|\Z)"
+    paths: Dict[str, str] = {}
+    for match in re.finditer(pattern, package_text, re.DOTALL):
+        name = match.group(1)
+        body = match.group("body") or ""
+        path_match = re.search(r"\bpath:\s*\"([^\"]+)\"", body)
+        if path_match:
+            paths[name] = path_match.group(1)
+    return paths
+
+
 def _swift_project_info(root: Path, files: Optional[List[Path]] = None) -> Dict[str, Any]:
     package_text = _swift_package_text(root)
     package_exists = bool(package_text)
@@ -375,6 +580,11 @@ def _swift_project_info(root: Path, files: Optional[List[Path]] = None) -> Dict[
     test_targets = _swift_target_names(package_text, "testTarget")
     executable_products = _swift_target_names(package_text, "executable")
     library_products = _swift_target_names(package_text, "library")
+    target_paths = {
+        "regular": _swift_target_path_overrides(package_text, "target"),
+        "executable": _swift_target_path_overrides(package_text, "executableTarget"),
+        "test": _swift_target_path_overrides(package_text, "testTarget"),
+    }
 
     return {
         "is_swift_project": package_exists or bool(swift_files),
@@ -388,6 +598,11 @@ def _swift_project_info(root: Path, files: Optional[List[Path]] = None) -> Dict[
             "executable": executable_targets[:80],
             "test": test_targets[:80],
         },
+        "target_paths": target_paths,
+        "missing_test_target_dirs": [
+            target for target in test_targets
+            if target not in test_dirs and target not in target_paths.get("test", {})
+        ][:80],
         "products": {
             "executable": executable_products[:80],
             "library": library_products[:80],
@@ -831,6 +1046,11 @@ def _default_guard() -> Dict[str, Any]:
         "last_receipt_at": "",
         "last_receipt_blocked_reason": "",
         "language_profile": "unknown",
+        "objective_required": False,
+        "test_phase_required": False,
+        "last_missing_tests_reason": "",
+        "scope_phase_required": False,
+        "last_scope_contract_reason": "",
     }
 
 
@@ -897,6 +1117,46 @@ def _detect_language_profile(root: Path) -> str:
     if (root / "package.json").exists():
         return "node"
     return "unknown"
+
+
+def _missing_required_tests(root: Path, project_map: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Return reasons this project still needs real tests before receipt.
+
+    This intentionally separates "a compile/check command passed" from
+    "the staged build is ready to hand off". Local models tend to verify a
+    compile/vet slice too early, then get trapped by receipt_required before
+    writing tests.
+    """
+    project_map = project_map or _build_project_map(root, max_files=700)
+    profile = _detect_language_profile(root)
+    reasons: List[str] = []
+
+    if profile == "go":
+        go_info = project_map.get("go", {}) or {}
+        if go_info.get("go_file_count", 0) > 0 and not go_info.get("test_files"):
+            reasons.append("Go source exists but no sampled *_test.go file exists; add focused Go tests before receipt.")
+    elif profile == "swift":
+        swift_info = project_map.get("swift", {}) or {}
+        targets = swift_info.get("targets", {}) if isinstance(swift_info, dict) else {}
+        test_targets = targets.get("test", []) or []
+        if test_targets and not swift_info.get("test_files"):
+            reasons.append("SwiftPM declares a test target but no sampled XCTest files exist under Tests/<Target>.")
+        elif swift_info.get("swift_file_count", 0) > 0 and not swift_info.get("test_files"):
+            reasons.append("Swift source exists but no sampled XCTest files exist; add Tests/<Target>Tests coverage before receipt.")
+    elif profile == "python":
+        python_info = project_map.get("python", {}) or {}
+        if python_info.get("python_file_count", 0) > 1 and not python_info.get("test_files"):
+            reasons.append("Python source exists but no sampled tests exist; add unittest/pytest coverage before receipt.")
+    elif profile == "rust":
+        rust_info = project_map.get("rust", {}) or {}
+        if rust_info.get("rust_file_count", 0) > 0 and not rust_info.get("test_files") and not rust_info.get("has_inline_tests"):
+            reasons.append("Rust source exists but no sampled #[test] or tests/ files exist; add focused Rust tests before receipt.")
+    elif profile == "node":
+        node_info = project_map.get("node", {}) or {}
+        if node_info.get("source_file_count", 0) > 0 and not node_info.get("test_files"):
+            reasons.append("Node/TypeScript source exists but no sampled test files exist; add a focused discovered test before receipt.")
+
+    return reasons
 
 
 def _language_budget_defaults(root: Path) -> Dict[str, int]:
@@ -1339,6 +1599,31 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
             ),
         )
 
+    if tool_name in {"write_file", "patch"} and not str(state.get("objective") or "").strip():
+        guard["objective_required"] = True
+        return _write_guard_block(
+            root,
+            state,
+            guard,
+            "objective-required",
+            (
+                "Builder Doctor blocked this source edit because the project has no saved objective. "
+                "Call builder_resume with action=update and objective set to the concrete user request, "
+                "then continue the staged build."
+            ),
+        )
+
+    if guard.get("receipt_required") and (
+        guard.get("test_phase_required") or guard.get("scope_phase_required")
+    ):
+        guard["receipt_required"] = False
+        guard["verify_required"] = False
+        state["guard"] = guard
+        try:
+            _save_state(root, state)
+        except Exception:
+            pass
+
     if guard.get("receipt_required"):
         return _write_guard_block(
             root,
@@ -1684,6 +1969,30 @@ def _ensure_required_verify_commands(root: Path, commands: List[str]) -> List[st
     profile = _detect_language_profile(root)
     normalized = list(commands)
 
+    if profile == "swift":
+        has_swift_compile_check = any(
+            re.search(r"\bswift\s+build\b", command)
+            for command in normalized
+        )
+        has_swift_test = any(
+            re.search(r"\bswift\s+test\b", command)
+            for command in normalized
+        )
+        if has_swift_compile_check and not has_swift_test:
+            normalized.append("swift test")
+
+    if profile == "go":
+        has_go_compile_check = any(
+            re.search(r"\bgo\s+(?:build|vet)\b", command)
+            for command in normalized
+        )
+        has_go_test = any(
+            re.search(r"\bgo\s+test\b", command)
+            for command in normalized
+        )
+        if has_go_compile_check and not has_go_test:
+            normalized.append("go test ./...")
+
     if profile == "rust":
         has_cargo_compile_check = any(
             re.search(r"\bcargo\s+(?:check|build|clippy)\b", command)
@@ -1719,6 +2028,26 @@ def _failure_guidance(command: str, output: str, timed_out: bool = False) -> Dic
             "message": m.group(5),
         })
         if len(diagnostics) >= 12:
+            break
+
+    for line in output.splitlines():
+        stripped = line.strip()
+        m = re.search(r"target '([^']+)' has overlapping sources:\s*(.+)$", stripped)
+        if not m:
+            continue
+        sources = [part.strip() for part in m.group(2).split(",") if part.strip()]
+        key = f"swiftpm-overlap|{m.group(1)}|{'|'.join(sources)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        diagnostics.append({
+            "kind": "swiftpm-overlapping-sources",
+            "file": "Package.swift",
+            "target": m.group(1),
+            "sources": sources[:12],
+            "message": "SwiftPM target has overlapping sources, commonly because a declared test target has no Tests/<Target> directory or target paths do not match conventional layout.",
+        })
+        if len(diagnostics) >= 16:
             break
 
     for line in output.splitlines():
@@ -1973,6 +2302,9 @@ def _failure_guidance(command: str, output: str, timed_out: bool = False) -> Dic
         suggested_next.append("Read the first reported JS/TS file, patch that diagnostic only, then rerun the same builder_verify command.")
     if any(item.get("kind") == "swift-compiler" and item.get("severity") == "error" for item in diagnostics):
         suggested_next.append("Read the first failing Swift file at the reported line, patch that compile error only, then rerun builder_verify.")
+    if any(item.get("kind") == "swiftpm-overlapping-sources" for item in diagnostics):
+        suggested_next.append("Run builder_doctor focus=swift; fix target layout first, especially missing Tests/<TestTarget>/ directories, before editing Swift behavior.")
+        suggested_next.append("Do not keep adding path/exclude guesses; align Package.swift target names with Sources/<Target> and Tests/<TestTarget>.")
     if any(item.get("kind") == "xctest-failure" for item in diagnostics):
         suggested_next.append("Open the failing XCTest and the implementation under test; patch behavior, not the assertion, then rerun swift test.")
     if "swift build" in command and not diagnostics:
@@ -2152,6 +2484,16 @@ def _repair_recipe(language: str, diagnostic: Dict[str, Any], command: str, zero
             "Do not rewrite behavior until package setup passes.",
             f"Rerun builder_verify with `{command}`.",
         ]
+    elif kind in {"swiftpm-overlapping-sources"}:
+        recipe["mode"] = "swiftpm-target-layout-repair"
+        recipe["patch_policy"] = "Fix SwiftPM target layout only; do not change simulation/app behavior during this repair."
+        recipe["steps"] = [
+            "Run builder_doctor with focus=swift or inspect its Swift findings.",
+            "Ensure each declared library/executable target maps to exactly one Sources/<Target>/ directory or one explicit path.",
+            "Ensure every .testTarget has a real Tests/<TestTarget>/ directory with at least one XCTest file, or a valid test-target-specific path under Tests.",
+            "Remove stale source directories that no target should own instead of adding broad exclude guesses.",
+            f"Rerun builder_verify with `{command}`.",
+        ]
     elif kind in {"rust-test-failure", "xctest-failure", "pytest-failure", "go-test-failure"}:
         recipe["mode"] = f"{language}-test-repair"
     return recipe
@@ -2315,6 +2657,7 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
     # --- 0) SwiftPM/XCTest structure risks ---
     if focus in ("all", "swift", "swiftpm", "testing", "build"):
         if swift_info.get("is_swift_project"):
+            package_text = _swift_package_text(root)
             imports = set(swift_info.get("imports", []))
             ui_imports = sorted(imports.intersection({"SwiftUI", "AppKit", "UIKit", "SpriteKit", "SceneKit"}))
             if swift_info.get("package_file") and not any(swift_info.get("targets", {}).values()):
@@ -2334,6 +2677,24 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
                     "message": "SwiftPM package has no detected test target or Tests directory.",
                     "evidence": "No Tests/* directory and no .testTarget entry found.",
                     "suggested_fix": "Add a Tests/<TargetName>Tests target before relying on behavior claims.",
+                })
+            if swift_info.get("missing_test_target_dirs"):
+                findings.append({
+                    "severity": "error",
+                    "code": "swiftpm-test-target-dir-missing",
+                    "file": "Package.swift",
+                    "message": "SwiftPM declares test targets whose conventional Tests/<Target> directories are missing.",
+                    "evidence": f"missing_test_target_dirs={swift_info.get('missing_test_target_dirs')}, test_target_dirs={swift_info.get('test_target_dirs', [])}",
+                    "suggested_fix": "Create Tests/<TestTargetName>/<TestTargetName>.swift with XCTest cases, or give that specific .testTarget a valid path under Tests. Do not try to fix this with exclude entries on source targets.",
+                })
+            if swift_info.get("targets", {}).get("test") and not swift_info.get("test_files"):
+                findings.append({
+                    "severity": "error",
+                    "code": "swiftpm-test-files-missing",
+                    "file": "Tests",
+                    "message": "SwiftPM test target exists, but no sampled XCTest files were found.",
+                    "evidence": f"test_targets={swift_info.get('targets', {}).get('test', [])}, test_files=[]",
+                    "suggested_fix": "Add at least one XCTest file under Tests/<TestTargetName>/ before claiming behavior is verified.",
                 })
             if swift_info.get("products", {}).get("executable") or swift_info.get("targets", {}).get("executable"):
                 if not swift_info.get("main_files"):
@@ -2355,8 +2716,12 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
                     "suggested_fix": "Declare supported platforms in Package.swift, such as platforms: [.macOS(.v14)].",
                 })
             for target in swift_info.get("targets", {}).get("regular", []) + swift_info.get("targets", {}).get("executable", []):
-                package_text = _swift_package_text(root)
-                if target not in swift_info.get("source_target_dirs", []) and "path:" not in package_text:
+                target_paths = swift_info.get("target_paths", {})
+                path_overrides = {}
+                if isinstance(target_paths, dict):
+                    path_overrides.update(target_paths.get("regular", {}) or {})
+                    path_overrides.update(target_paths.get("executable", {}) or {})
+                if target not in swift_info.get("source_target_dirs", []) and target not in path_overrides:
                     findings.append({
                         "severity": "warning",
                         "code": "swiftpm-target-dir-missing",
@@ -2366,15 +2731,17 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
                         "suggested_fix": "Create Sources/<Target>/ or add an explicit path: argument for the target.",
                     })
             for target in swift_info.get("targets", {}).get("test", []):
-                package_text = _swift_package_text(root)
-                if target not in swift_info.get("test_target_dirs", []) and "path:" not in package_text:
+                if target in set(swift_info.get("missing_test_target_dirs", []) or []):
+                    continue
+                test_paths = (swift_info.get("target_paths", {}) or {}).get("test", {}) if isinstance(swift_info.get("target_paths"), dict) else {}
+                if target not in swift_info.get("test_target_dirs", []) and target not in test_paths:
                     findings.append({
-                        "severity": "warning",
+                        "severity": "error",
                         "code": "swiftpm-test-target-dir-missing",
                         "file": "Package.swift",
                         "message": "SwiftPM test target name does not match a conventional Tests/<Target> directory.",
                         "evidence": f"target={target}, test_target_dirs={swift_info.get('test_target_dirs', [])}",
-                        "suggested_fix": "Create Tests/<Target>/ or add an explicit path: argument for the test target.",
+                        "suggested_fix": "Create Tests/<Target>/ with an XCTest file, or add an explicit path on that .testTarget only.",
                     })
 
     # --- 0b) Python/pytest/uv structure risks ---
@@ -3044,12 +3411,20 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
             record.update(_failure_guidance(cmd, output_tail, timed_out=timed_out))
         results.append(record)
 
+    project_map_for_verify = _build_project_map(root, max_files=700)
+    missing_required_tests = [] if any_failure else _missing_required_tests(root, project_map_for_verify)
     summary = f"Ran {len(commands)} command(s); {len(failures)} failure(s)."
     next_required: List[str] = []
     if any_failure:
         next_required.append("Call builder_failure_plan with this failed verifier result before patching.")
         next_required.append("Patch one concrete failure, then rerun builder_verify; do not add new features.")
         next_required.append("Make at most two focused patches before rerunning builder_verify; do not stack broad patch bursts.")
+    elif missing_required_tests:
+        next_required.extend([
+            "This verification passed, but the staged build still has no focused tests for the current kernel.",
+            "Open a test/hardening phase now: add one real discovered test file, then rerun builder_verify with the language test command.",
+            "Do not call builder_receipt as final handoff until the test command passes with tests discovered.",
+        ])
     else:
         next_required.extend([
             "builder_verify recorded this verification in .hermes-builder/state.json.",
@@ -3089,10 +3464,20 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         guard["language_profile"] = _detect_language_profile(root)
         if any_failure:
             guard["receipt_required"] = False
+            guard["test_phase_required"] = False
+            guard["last_missing_tests_reason"] = ""
             guard["repair_patches_remaining"] = 2
             guard["failure_plan_required"] = True
+        elif missing_required_tests:
+            guard["receipt_required"] = False
+            guard["test_phase_required"] = True
+            guard["last_missing_tests_reason"] = "; ".join(missing_required_tests)[:1000]
+            guard["repair_patches_remaining"] = None
+            guard["failure_plan_required"] = False
         else:
             guard["receipt_required"] = True
+            guard["test_phase_required"] = False
+            guard["last_missing_tests_reason"] = ""
             guard["repair_patches_remaining"] = None
             guard["failure_plan_required"] = False
         state["guard"] = guard
@@ -3105,6 +3490,7 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         "project_path": project_path,
         "commands": results,
         "failures": failures,
+        "missing_required_tests": missing_required_tests,
         "summary": summary,
         "next_required": next_required,
         "state_recorded": state_recorded,
@@ -3143,6 +3529,8 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
         max_source_dirs = language_defaults["max_source_dirs"]
     language_policy = _language_stage_policy(root)
     env_artifacts = _environment_artifact_dirs(root)
+    project_map_for_budget = _build_project_map(root, max_files=700)
+    missing_required_tests = _missing_required_tests(root, project_map_for_budget)
 
     code_exts = {
         ".c", ".cc", ".cpp", ".go", ".h", ".hpp", ".js", ".jsx",
@@ -3199,21 +3587,36 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
         })
 
     previous_guard: Dict[str, Any] = {}
+    state_for_budget: Dict[str, Any] = {}
     try:
-        previous_guard = _anchor_guard(root, _guard_from_state(_load_state(root)))
+        state_for_budget = _load_state(root)
+        previous_guard = _anchor_guard(root, _guard_from_state(state_for_budget))
     except Exception:
         previous_guard = {}
+        state_for_budget = _default_state(root)
+    scope_contract = _scope_contract_status(root, state_for_budget, project_map_for_budget)
     last_verify_at = str(previous_guard.get("last_verify_at") or "")
     last_receipt_at = str(previous_guard.get("last_receipt_at") or "")
     receipt_is_current = bool(last_receipt_at and last_verify_at and last_receipt_at >= last_verify_at)
+    test_phase_pending = bool(
+        missing_required_tests
+        and previous_guard.get("last_verify_success") is True
+    )
+    scope_phase_pending = bool(
+        scope_contract.get("required")
+        and not scope_contract.get("ready")
+        and previous_guard.get("last_verify_success") is True
+    )
     post_verify_pending = (
         previous_guard.get("last_verify_success") is True
         and not after_verify
         and not receipt_is_current
+        and not test_phase_pending
+        and not scope_phase_pending
     )
 
     actions: List[str] = []
-    if issues:
+    if issues and not scope_phase_pending:
         actions.extend([
             "Stop adding files for this phase now.",
             "If verification has not passed for the current file set, run builder_verify before any more write_file or patch calls.",
@@ -3225,6 +3628,21 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "A passing builder_verify checkpoint is already recorded for this stage.",
             "Call builder_budget again with after_verify=true if needed, then call builder_receipt now.",
             "Do not write more files or send the final answer before builder_receipt.",
+        ])
+    elif test_phase_pending:
+        actions.extend([
+            "A passing compile/check checkpoint is recorded, but focused tests are still missing.",
+            "Open the test/hardening phase now: add one real discovered test file for the current kernel.",
+            f"Rerun builder_verify with the language test command: {language_policy['verify']}.",
+            "Do not call builder_receipt as final handoff until the test verifier passes with tests discovered.",
+        ])
+    elif scope_phase_pending:
+        actions.extend([
+            "A passing verifier is recorded, but the saved objective is under-covered by the current source/test corpus.",
+            f"Matched objective anchors: {scope_contract.get('matched_terms', [])}.",
+            f"Missing objective anchors to consider next: {scope_contract.get('missing_terms', [])[:12]}.",
+            "Open one scoped feature/test batch that covers missing objective anchors, preferring patches to existing files if the file budget is already full.",
+            "Do not call builder_receipt as final handoff until scope coverage is no longer under-covered.",
         ])
     elif after_verify:
         actions.extend([
@@ -3249,17 +3667,46 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
         guard["last_budget_at"] = _now_iso()
         guard["last_budget_after_verify"] = after_verify
         guard["language_profile"] = _detect_language_profile(root)
-        if issues:
+        if issues and not scope_phase_pending:
             guard["verify_required"] = True
+        elif test_phase_pending:
+            guard["writes_since_budget"] = 0
+            guard["verify_required"] = False
+            guard["receipt_required"] = False
+            guard["test_phase_required"] = True
+            guard["scope_phase_required"] = False
+            guard["last_missing_tests_reason"] = "; ".join(missing_required_tests)[:1000]
+        elif scope_phase_pending:
+            guard["writes_since_budget"] = 0
+            guard["verify_required"] = False
+            guard["receipt_required"] = False
+            guard["test_phase_required"] = False
+            guard["scope_phase_required"] = True
+            guard["last_scope_contract_reason"] = str(scope_contract.get("reason", ""))[:1000]
         elif post_verify_pending:
             guard["writes_since_budget"] = 0
             guard["verify_required"] = False
             guard["receipt_required"] = True
+            guard["test_phase_required"] = False
+            guard["scope_phase_required"] = False
         elif after_verify:
             guard["writes_since_budget"] = 0
             guard["verify_required"] = False
             if guard.get("last_verify_success") is True:
-                guard["receipt_required"] = True
+                if missing_required_tests:
+                    guard["receipt_required"] = False
+                    guard["test_phase_required"] = True
+                    guard["scope_phase_required"] = False
+                    guard["last_missing_tests_reason"] = "; ".join(missing_required_tests)[:1000]
+                elif scope_contract.get("required") and not scope_contract.get("ready"):
+                    guard["receipt_required"] = False
+                    guard["test_phase_required"] = False
+                    guard["scope_phase_required"] = True
+                    guard["last_scope_contract_reason"] = str(scope_contract.get("reason", ""))[:1000]
+                else:
+                    guard["receipt_required"] = True
+                    guard["test_phase_required"] = False
+                    guard["scope_phase_required"] = False
         elif not guard.get("verify_required"):
             guard["writes_since_budget"] = 0
         state["guard"] = guard
@@ -3286,11 +3733,15 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
         },
         "policy": language_policy,
         "environment_artifacts": env_artifacts,
+        "missing_required_tests": missing_required_tests,
+        "scope_contract": scope_contract,
         "over_budget": bool(issues),
-        "hard_stop": bool(issues),
+        "hard_stop": bool(issues and not scope_phase_pending),
         "allowed_next_tools": (
             ["builder_verify", "builder_resume", "builder_receipt"]
-            if issues
+            if issues and not scope_phase_pending
+            else ["write_file", "patch", "builder_budget", "builder_verify", "builder_resume"]
+            if test_phase_pending or scope_phase_pending
             else ["builder_resume", "builder_receipt"]
             if after_verify or post_verify_pending
             else ["write_file", "patch", "builder_budget", "builder_verify"]
@@ -3305,6 +3756,11 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "writes_since_verify": guard.get("writes_since_verify", 0),
             "verify_required": bool(guard.get("verify_required", False)),
             "receipt_required": bool(guard.get("receipt_required", False)),
+            "objective_required": bool(guard.get("objective_required", False)),
+            "test_phase_required": bool(guard.get("test_phase_required", False)),
+            "last_missing_tests_reason": guard.get("last_missing_tests_reason", ""),
+            "scope_phase_required": bool(guard.get("scope_phase_required", False)),
+            "last_scope_contract_reason": guard.get("last_scope_contract_reason", ""),
             "repair_patches_remaining": guard.get("repair_patches_remaining"),
         },
         "source_sample": [_rel(path, root) for path in source_files[:40]],
@@ -3544,6 +4000,39 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
     ])
 
     phases = phases[:max_phases]
+    state_recorded = False
+    state_warning = ""
+    scope_contract = {
+        "required": False,
+        "objective_terms": _extract_objective_terms(objective),
+    }
+    try:
+        state = _load_state(root)
+        if objective and not state.get("objective"):
+            state["objective"] = objective
+        guard = _anchor_guard(root, _guard_from_state(state))
+        guard["language_profile"] = _detect_language_profile(root)
+        guard["objective_required"] = not bool(str(state.get("objective") or "").strip())
+        state["guard"] = guard
+        _save_state(root, state)
+        state_recorded = True
+    except Exception as exc:
+        state_warning = f"Could not persist builder objective: {exc}"
+    if objective:
+        scope_contract = {
+            "required": len(_extract_objective_terms(objective)) >= 6,
+            "objective_terms": _extract_objective_terms(objective),
+            "receipt_rule": (
+                "builder_receipt checks that verified source/test files cover enough saved objective anchors "
+                "before final handoff."
+            ),
+        }
+    else:
+        scope_contract = {
+            "required": False,
+            "objective_terms": [],
+            "next_required": "Call builder_resume action=update with objective set to the concrete user request before source edits.",
+        }
     return _json({
         "success": True,
         "project_path": str(root),
@@ -3562,6 +4051,9 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
             "is_newish": is_newish,
         },
         "policy": language_policy,
+        "scope_contract": scope_contract,
+        "state_recorded": state_recorded,
+        "state_warning": state_warning,
         "phases": phases,
         "rules": [
             "Touch no more than the phase max_file_batch before verifying or recording state.",
@@ -3672,6 +4164,7 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
 
         guard = _anchor_guard(root, _guard_from_state(state))
         guard["language_profile"] = _detect_language_profile(root)
+        guard["objective_required"] = not bool(str(state.get("objective") or "").strip())
         if verification_incoming:
             status = _verification_status(verification_incoming)
             guard["builder_verify_used"] = True
@@ -3757,8 +4250,10 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         })
 
     project_map = _build_project_map(root, max_files=700)
+    missing_required_tests = _missing_required_tests(root, project_map)
     state_path = _state_path(root)
     state = _load_state(root)
+    scope_contract = _scope_contract_status(root, state, project_map)
     state_exists = state_path.exists()
     git = _git_status(root, max_lines=max_files)
 
@@ -3795,6 +4290,14 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         warnings.append("At least one verification record reported zero executed tests; a completed stage needs focused tests that actually run.")
         if latest_verification and latest_verification.get("zero_tests_detected"):
             blocking_warnings.append("Latest verification reported zero executed tests; add a focused test and rerun builder_verify.")
+    for reason in missing_required_tests:
+        blocking_warnings.append(reason)
+    if scope_contract.get("required") and not scope_contract.get("ready"):
+        blocking_warnings.append(
+            "Saved objective is under-covered by the verified source/test corpus: "
+            f"{scope_contract.get('reason')} Missing anchors include "
+            f"{scope_contract.get('missing_terms', [])[:12]}."
+        )
     if guard.get("last_verify_success") is True and not guard.get("last_budget_after_verify"):
         warnings.append("Passing verification is recorded, but builder_budget(after_verify=true) has not been recorded before receipt.")
     if project_map["scripts"] and not any(name in project_map["scripts"] for name in ("test", "build", "lint", "typecheck", "check")):
@@ -3823,6 +4326,7 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         "decisions": state.get("decisions", [])[:max_files],
         "files_touched": touched,
         "verification": verification[:max_files],
+        "scope_contract": scope_contract,
         "available_scripts": project_map["scripts"],
         "git": git,
         "warnings": blocking_warnings + warnings,
@@ -3838,7 +4342,29 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
             guard["verify_required"] = False
             guard["writes_since_budget"] = 0
             guard["failure_plan_required"] = False
+            guard["test_phase_required"] = False
+            guard["last_missing_tests_reason"] = ""
+            guard["scope_phase_required"] = False
+            guard["last_scope_contract_reason"] = ""
             guard["last_receipt_blocked_reason"] = ""
+        elif missing_required_tests and guard.get("last_verify_success") is True:
+            guard["receipt_required"] = False
+            guard["verify_required"] = False
+            guard["writes_since_budget"] = 0
+            guard["failure_plan_required"] = False
+            guard["test_phase_required"] = True
+            guard["scope_phase_required"] = False
+            guard["last_missing_tests_reason"] = "; ".join(missing_required_tests)[:1000]
+            guard["last_receipt_blocked_reason"] = "; ".join(blocking_warnings or warnings)[:1000]
+        elif scope_contract.get("required") and not scope_contract.get("ready") and guard.get("last_verify_success") is True:
+            guard["receipt_required"] = False
+            guard["verify_required"] = False
+            guard["writes_since_budget"] = 0
+            guard["failure_plan_required"] = False
+            guard["test_phase_required"] = False
+            guard["scope_phase_required"] = True
+            guard["last_scope_contract_reason"] = str(scope_contract.get("reason", ""))[:1000]
+            guard["last_receipt_blocked_reason"] = "; ".join(blocking_warnings or warnings)[:1000]
         else:
             guard["last_receipt_blocked_reason"] = "; ".join(blocking_warnings or warnings)[:1000]
         guard["last_receipt_at"] = _now_iso()
