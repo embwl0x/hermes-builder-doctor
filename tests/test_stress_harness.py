@@ -84,6 +84,29 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
         self.assertEqual(summary["terminal_verify_leaks"], ["node --test"])
 
+    def test_completion_churn_counts_calls_after_first_receipt(self) -> None:
+        module = load_stress_module()
+        summary = module.summarize_events(
+            [
+                {"event": "tool.started", "tool": "builder_verify"},
+                {"event": "tool.started", "tool": "builder_receipt"},
+                {"event": "tool.started", "tool": "builder_verify"},
+                {"event": "tool.started", "tool": "builder_acceptance"},
+                {"event": "tool.started", "tool": "builder_receipt"},
+            ],
+            ("go test ./...",),
+        )
+
+        self.assertEqual(
+            summary["completion_churn"],
+            {
+                "receipt_calls": 2,
+                "verify_after_first_receipt": 1,
+                "acceptance_after_first_receipt": 1,
+                "excess_completion_calls": 3,
+            },
+        )
+
     def test_transport_issue_and_stream_token_estimate_are_reported(self) -> None:
         module = load_stress_module()
         run = {

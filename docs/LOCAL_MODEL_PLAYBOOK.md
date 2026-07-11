@@ -20,6 +20,12 @@ process boundaries.
 10. Run `builder_budget` again with `after_verify: true`.
 11. Finish the current layer with `builder_receipt`.
 
+When a successful verifier is unchanged, Builder Doctor returns
+`already_verified: true` instead of rerunning it. When a successful receipt is
+unchanged, it returns `already_complete: true`. Treat either completion signal
+literally and stop the tool loop; do not seek reassurance with another verifier
+or receipt.
+
 ## Why This Helps
 
 Smaller local models often fail when a prompt asks for a full complex project in

@@ -1222,6 +1222,104 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertTrue(state["guard"]["acceptance_ready"])
         self.assertEqual(state["acceptance_contract"]["criteria"], [])
 
+    def test_duplicate_verify_and_receipt_become_compact_completion_noops(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Deliver feature proof")
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "Feature exists and passes its test",
+                            "evidence_paths": ["feature.py", "test_feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            first_verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            verification_count = len(
+                json.loads(
+                    (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+                )["verification"]
+            )
+            duplicate_verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            verification_count_after = len(
+                json.loads(
+                    (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+                )["verification"]
+            )
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+            duplicate_receipt = json.loads(
+                self.tools.builder_receipt({"project_path": str(root)})
+            )
+            verify_after_receipt = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            acceptance_after_receipt = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(first_verify["success"])
+        self.assertTrue(duplicate_verify["already_verified"])
+        self.assertEqual(verification_count_after, verification_count)
+        self.assertTrue(receipt["ready_to_report"])
+        self.assertNotIn("node", receipt["receipt"])
+        self.assertNotIn("python", receipt["receipt"])
+        self.assertEqual(
+            receipt["next_required"],
+            ["Stage complete. Stop calling builder tools and send the final answer now."],
+        )
+        self.assertTrue(duplicate_receipt["already_complete"])
+        self.assertLess(len(json.dumps(duplicate_receipt)), 2500)
+        self.assertTrue(verify_after_receipt["already_complete"])
+        self.assertTrue(acceptance_after_receipt["already_complete"])
+
+    def test_new_write_reservation_invalidates_completed_receipt(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Deliver feature proof")
+            self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "next.py")},
+            )
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(receipt["ready_to_report"])
+        self.assertIsNone(allowed)
+        self.assertFalse(state["guard"]["last_receipt_ready"])
+        self.assertEqual(state["guard"]["writes_since_verify"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

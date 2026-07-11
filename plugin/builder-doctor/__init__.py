@@ -364,6 +364,11 @@ def register(ctx) -> None:
                         "description": "Maximum changed/touched files to include.",
                         "default": 80,
                     },
+                    "compact": {
+                        "type": "boolean",
+                        "description": "Return a compact local-model-friendly receipt by default; set false only when full language maps are needed.",
+                        "default": True,
+                    },
                 },
                 "required": ["project_path"],
             },

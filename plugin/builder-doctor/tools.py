@@ -1045,6 +1045,7 @@ def _default_guard() -> Dict[str, Any]:
         "last_budget_after_verify": False,
         "last_receipt_at": "",
         "last_receipt_blocked_reason": "",
+        "last_receipt_ready": False,
         "language_profile": "unknown",
         "objective_required": False,
         "test_phase_required": False,
@@ -1661,6 +1662,7 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
 
     guard["writes_since_budget"] = _safe_int(guard.get("writes_since_budget", 0), 0, min_value=0) + 1
     guard["writes_since_verify"] = _safe_int(guard.get("writes_since_verify", 0), 0, min_value=0) + 1
+    guard["last_receipt_ready"] = False
     guard["language_profile"] = _detect_language_profile(root)
 
     if guard.get("last_verify_success") is False and isinstance(repair_remaining, int):
@@ -3279,6 +3281,61 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
 # builder_verify
 # ---------------------------------------------------------------------------
 
+def _cached_verification_records(
+    root: Path,
+    state: Dict[str, Any],
+    commands: List[str],
+) -> Optional[List[Dict[str, Any]]]:
+    """Return current passing records when rerunning would prove nothing new."""
+    guard = _guard_from_state(state)
+    if _safe_int(guard.get("writes_since_verify", 0), 0, min_value=0) != 0:
+        return None
+    verification = state.get("verification")
+    if not isinstance(verification, list) or not verification:
+        return None
+    contract = state.get("acceptance_contract")
+    baseline = 0
+    if isinstance(contract, dict):
+        try:
+            baseline = int(contract.get("verification_baseline", 0) or 0)
+        except (TypeError, ValueError):
+            baseline = 0
+    baseline = max(0, min(len(verification), baseline))
+    latest: Dict[str, Dict[str, Any]] = {}
+    for item in verification[baseline:]:
+        if not isinstance(item, dict):
+            continue
+        command = str(item.get("command") or "").strip()
+        if command:
+            latest[command] = item
+
+    current_evidence = _acceptance_evidence_snapshot(root, state)
+    cached: List[Dict[str, Any]] = []
+    for command in commands:
+        record = latest.get(command)
+        if not record:
+            return None
+        if (
+            record.get("source") != "builder_verify"
+            or record.get("exit_code") != 0
+            or record.get("timed_out")
+            or record.get("zero_tests_detected")
+        ):
+            return None
+        recorded_evidence = record.get("acceptance_evidence")
+        if current_evidence and recorded_evidence != current_evidence:
+            return None
+        cached.append({
+            "command": command,
+            "exit_code": 0,
+            "timed_out": False,
+            "duration_seconds": 0,
+            "output_tail": "Skipped unchanged duplicate; latest builder_verify result is still current.",
+            "zero_tests_detected": False,
+            "cached": True,
+        })
+    return cached
+
 def builder_verify(args: Dict[str, Any], **_: Any) -> str:
     project_path = args.get("project_path", "")
     commands = args.get("commands")
@@ -3314,6 +3371,28 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
             })
     else:
         commands = _ensure_required_verify_commands(root, commands)
+
+    state_before_verify = _load_state(root)
+    cached_records = _cached_verification_records(root, state_before_verify, commands)
+    if cached_records is not None:
+        already_complete = bool(_guard_from_state(state_before_verify).get("last_receipt_ready"))
+        return _json({
+            "success": True,
+            "project_path": project_path,
+            "commands": cached_records,
+            "failures": [],
+            "missing_required_tests": [],
+            "summary": "Skipped unchanged duplicate verification; the latest passing result is still current.",
+            "already_verified": True,
+            "already_complete": already_complete,
+            "next_required": (
+                ["The stage is already receipted. Stop calling builder tools and send the final answer now."]
+                if already_complete
+                else ["Call builder_budget with after_verify=true, then builder_receipt once."]
+            ),
+            "state_recorded": False,
+            "state_warning": "",
+        })
 
     env = os.environ.copy()
     env["CI"] = "1"
@@ -3463,6 +3542,7 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         state["verification"] = (existing_verification + verification_records)[-120:]
         guard = _anchor_guard(root, _guard_from_state(state))
         guard["builder_verify_used"] = True
+        guard["last_receipt_ready"] = False
         guard["last_verify_success"] = not any_failure
         guard["last_verify_at"] = _now_iso()
         guard["last_verify_commands"] = [str(command) for command in commands]
@@ -3686,6 +3766,7 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
                 "acceptance_ready": True,
                 "last_acceptance_at": _now_iso(),
                 "last_acceptance_reason": "No acceptance criteria recorded.",
+                "last_receipt_ready": False,
             })
             state["guard"] = guard
             _save_state(root, state)
@@ -3773,12 +3854,15 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
     guard["acceptance_ready"] = receipt_ready
     guard["last_acceptance_at"] = _now_iso()
     guard["last_acceptance_reason"] = evaluation["reason"]
+    if action in {"set", "replace", "update"}:
+        guard["last_receipt_ready"] = False
     state["guard"] = guard
     try:
         _save_state(root, state)
     except Exception:
         pass
 
+    already_complete = bool(action == "read" and guard.get("last_receipt_ready") and receipt_ready)
     return _json({
         "success": True,
         "project_path": project_path,
@@ -3790,6 +3874,12 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
         "all_satisfied": receipt_ready,
         "reason": evaluation["reason"],
         "state_recorded": True,
+        "already_complete": already_complete,
+        "next_required": (
+            ["The stage is already receipted. Stop calling builder tools and send the final answer now."]
+            if already_complete
+            else []
+        ),
     })
 
 
@@ -4530,7 +4620,7 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
             "After any failed builder_verify, make at most two focused patches before rerunning builder_verify.",
             "After builder_verify succeeds, do not rerun the same command via terminal; call builder_resume, builder_budget, then builder_receipt.",
             "If verification still fails after one focused fix pass, call builder_receipt and report the remaining failure.",
-            "Before the session reaches roughly 45k context tokens, force a checkpoint/receipt instead of starting another feature pass.",
+            "Before the session reaches roughly 70% of the active model context (or 45k tokens when the limit is unknown), force a checkpoint/receipt instead of starting another feature pass.",
             "Use builder_resume after every phase boundary or meaningful change in direction.",
             "If builder_verify times out, shrink the command scope before increasing timeout.",
         ],
@@ -4626,6 +4716,7 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
         guard = _anchor_guard(root, _guard_from_state(state))
         guard["language_profile"] = _detect_language_profile(root)
         guard["objective_required"] = not bool(str(state.get("objective") or "").strip())
+        guard["last_receipt_ready"] = False
         if verification_incoming:
             status = _verification_status(verification_incoming)
             guard["builder_verify_used"] = True
@@ -4700,6 +4791,7 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
     project_path = args.get("project_path", "")
     max_files = _safe_int(args.get("max_files", 80), default=80, min_value=20, max_value=300)
     verification_results = _listify(args.get("verification_results"))
+    compact = bool(args.get("compact", True))
 
     root = Path(project_path).resolve()
     if not root.is_dir():
@@ -4719,6 +4811,36 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
     acceptance_required = _acceptance_required(state)
     state_exists = state_path.exists()
     git = _git_status(root, max_lines=max_files)
+    guard = _anchor_guard(root, _guard_from_state(state))
+
+    if (
+        guard.get("last_receipt_ready")
+        and not guard.get("last_receipt_blocked_reason")
+        and _safe_int(guard.get("writes_since_verify", 0), 0, min_value=0) == 0
+        and (not acceptance_required or acceptance.get("all_satisfied"))
+    ):
+        return _json({
+            "success": True,
+            "project_path": str(root),
+            "state_path": str(state_path),
+            "ready_to_report": True,
+            "already_complete": True,
+            "blocking_warnings": [],
+            "summary": "This unchanged stage already has a successful receipt.",
+            "receipt": {
+                "project": project_map["name"],
+                "project_path": str(root),
+                "files_touched": list(state.get("files_touched", []))[:max_files],
+                "acceptance_contract": {"required": acceptance_required, **acceptance},
+                "warnings": [],
+                "blocking_warnings": [],
+            },
+            "next_required": [
+                "Stop calling builder tools and send the final answer now; no project evidence changed."
+            ],
+            "state_recorded": False,
+            "state_warning": "",
+        })
 
     touched = list(state.get("files_touched", []))[:max_files]
     if not touched and git.get("changed_files"):
@@ -4730,7 +4852,6 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
 
     warnings: List[str] = []
     blocking_warnings: List[str] = []
-    guard = _anchor_guard(root, _guard_from_state(state))
     latest_verification = next((item for item in reversed(verification) if isinstance(item, dict)), None)
     latest_verification_status = _verification_status([latest_verification]) if latest_verification else None
     zero_test_records = [
@@ -4781,11 +4902,7 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         "project_path": str(root),
         "package_manager": project_map["package_manager"],
         "frameworks": project_map["frameworks"],
-        "node": project_map.get("node", {}),
-        "swift": project_map.get("swift", {}),
-        "python": project_map.get("python", {}),
-        "rust": project_map.get("rust", {}),
-        "go": project_map.get("go", {}),
+        "language_profile": guard.get("language_profile") or _detect_language_profile(root),
         "objective": state.get("objective", ""),
         "status": state.get("status", ""),
         "current_phase": state.get("current_phase", ""),
@@ -4793,7 +4910,7 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         "next_steps": state.get("next_steps", [])[:max_files],
         "decisions": state.get("decisions", [])[:max_files],
         "files_touched": touched,
-        "verification": verification[:max_files],
+        "verification": verification[-min(max_files, 12):],
         "scope_contract": scope_contract,
         "acceptance_contract": {
             "required": acceptance_required,
@@ -4804,6 +4921,14 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         "warnings": blocking_warnings + warnings,
         "blocking_warnings": blocking_warnings,
     }
+    if not compact:
+        receipt.update({
+            "node": project_map.get("node", {}),
+            "swift": project_map.get("swift", {}),
+            "python": project_map.get("python", {}),
+            "rust": project_map.get("rust", {}),
+            "go": project_map.get("go", {}),
+        })
 
     state_recorded = False
     state_warning = ""
@@ -4813,6 +4938,7 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         guard["acceptance_ready"] = bool(acceptance.get("all_satisfied"))
         guard["last_acceptance_at"] = _now_iso()
         guard["last_acceptance_reason"] = str(acceptance.get("reason", ""))[:1000]
+        guard["last_receipt_ready"] = ready_to_report
         if ready_to_report:
             guard["receipt_required"] = False
             guard["verify_required"] = False
@@ -4823,6 +4949,7 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
             guard["scope_phase_required"] = False
             guard["last_scope_contract_reason"] = ""
             guard["last_receipt_blocked_reason"] = ""
+            guard["last_receipt_ready"] = True
         elif missing_required_tests and guard.get("last_verify_success") is True:
             guard["receipt_required"] = False
             guard["verify_required"] = False
@@ -4843,6 +4970,7 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
             guard["last_receipt_blocked_reason"] = "; ".join(blocking_warnings or warnings)[:1000]
         else:
             guard["last_receipt_blocked_reason"] = "; ".join(blocking_warnings or warnings)[:1000]
+            guard["last_receipt_ready"] = False
         guard["last_receipt_at"] = _now_iso()
         guard["language_profile"] = _detect_language_profile(root)
         state["guard"] = guard
@@ -4864,6 +4992,13 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
             f"{len(blocking_warnings) + len(warnings)} warning(s)."
         ),
         "receipt": receipt,
+        "next_required": (
+            ["Stage complete. Stop calling builder tools and send the final answer now."]
+            if ready_to_report
+            else [
+                "Address the blocking_warnings only. Do not rerun an unchanged verifier or receipt."
+            ]
+        ),
         "state_recorded": state_recorded,
         "state_warning": state_warning,
     })

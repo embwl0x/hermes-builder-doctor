@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.7.1
+version: 0.8.0
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -122,7 +122,9 @@ Hard gate for large builds:
   for the missing objective anchors, then rerun `builder_verify`.
 - When `builder_verify` fails, call `builder_failure_plan` with the failed verifier result before patching. Follow its first diagnostic and one-file repair guidance.
 - If verification still fails after one focused fix pass, call `builder_failure_plan` again for the new first failure or call `builder_receipt` and report the remaining failure instead of continuing indefinitely.
-- Before context grows past roughly 45k tokens, force a receipt/checkpoint instead of starting another feature pass.
+- Before context grows past roughly 70% of the active model limit, force a
+  receipt/checkpoint instead of starting another feature pass. If the limit is
+  unknown, use 45k tokens as the conservative fallback.
 - A completed vertical slice is better than an unfinished full wish list.
 - A build stage is not complete until `builder_receipt` has been called after
   the final successful verification, even when the requested project is small.
@@ -187,6 +189,9 @@ Verification discipline:
 - Once `builder_verify` has been used for a project, continue verification through `builder_verify`; do not switch to the raw terminal for the same test/build/check command.
 - Use raw terminal only for bounded setup/introspection that `builder_verify` is not meant to do, such as creating the initial project folder, listing files, or reading command availability.
 - When `builder_verify` succeeds, it records the verification automatically. Do not rerun the same command through raw terminal for reassurance. Call `builder_resume` only if checkpoint notes are needed, then `builder_budget` with `after_verify: true`, then `builder_receipt`.
+- If `builder_verify` reports `already_verified: true`, do not call it again;
+  follow `next_required`. If it also reports `already_complete: true`, send the
+  final answer immediately.
 - If `builder_verify` reports `missing_required_tests`, add the focused test phase next. Do not use `builder_receipt` as final handoff until the test verifier passes.
 - If `builder_budget` reports `scope_phase_required` or `builder_receipt`
   blocks on under-covered scope, patch the current kernel toward the listed
@@ -258,6 +263,9 @@ Call `builder_receipt` before final response. Use it to report:
 
 If `builder_receipt` warns that no verification exists, run `builder_verify` or explicitly state why verification is unavailable.
 If `builder_receipt` returns `ready_to_report: false`, do not treat the stage as complete. Address `blocking_warnings` first. If tests are missing, add the focused test phase and rerun `builder_verify`; if objective scope is under-covered, add one small source/test batch for the listed missing anchors and rerun `builder_verify`; if a verifier failed, run `builder_failure_plan`, patch one cause, rerun `builder_verify`, and then call `builder_budget` with `after_verify: true`.
+If it returns `ready_to_report: true`, stop calling Builder Doctor tools and
+answer the user. Repeated unchanged verifier, acceptance, and receipt calls are
+completion churn; the tools return compact no-op results for them.
 
 ## Reporting rules
 
@@ -416,6 +424,7 @@ Inputs:
 - `project_path` (string, required)
 - `verification_results` (array, optional)
 - `max_files` (integer, optional, default `80`)
+- `compact` (boolean, optional, default `true`)
 
 Returns JSON:
 - `success` (bool)

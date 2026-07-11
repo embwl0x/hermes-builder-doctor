@@ -134,7 +134,8 @@ Use `--prompt-mode probe` first when testing a new or smaller model: the prompts
 are compact and rely on the configured Hermes build workflow instead of naming
 every Builder Doctor tool explicitly.
 The JSON report includes staging signals such as budget use, writes before the
-first verifier, receipt use, and raw terminal verifier leaks.
+first verifier, receipt use, raw terminal verifier leaks, and completion churn
+(verifier/acceptance/receipt calls made after the first receipt).
 
 The stress harness starts Hermes `/v1/runs`, streams tool events, independently
 verifies the generated projects, asks for one repair pass by default, writes a
@@ -156,6 +157,8 @@ and only deletes generated projects after Hermes reports a terminal run status.
   recorded contract blocks `builder_receipt` until every artifact exists and
   every exact verifier command has a successful post-contract `builder_verify`
   record. The latest result wins, and evidence changes invalidate old proof.
+- Successful unchanged verifier and receipt calls are cached as compact no-ops,
+  with an explicit instruction to stop tool cycling and answer the user.
 - For Rust projects, compile-only verification such as `cargo check` is paired
   with `cargo test` so a completed stage cannot receipt without the test gate.
 - Targeted Rust repair commands such as `cargo test test_name` are treated as
