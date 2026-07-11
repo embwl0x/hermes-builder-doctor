@@ -1031,8 +1031,51 @@ def _output_text(value: Any) -> str:
     return str(value)
 
 
-def _stop_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
-    """Stop a verifier and every child it spawned before returning."""
+def _descendant_pids(root_pid: int) -> List[int]:
+    """Snapshot descendants, including children that created a new process group."""
+    try:
+        snapshot = subprocess.run(
+            ["ps", "-axo", "pid=,ppid="],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return []
+
+    children: Dict[int, List[int]] = {}
+    for line in snapshot.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        try:
+            pid, ppid = (int(field) for field in fields)
+        except ValueError:
+            continue
+        children.setdefault(ppid, []).append(pid)
+
+    descendants: List[int] = []
+    pending = list(children.get(root_pid, []))
+    while pending:
+        pid = pending.pop()
+        descendants.append(pid)
+        pending.extend(children.get(pid, []))
+    return descendants
+
+
+def _signal_pids(pids: List[int], sig: signal.Signals) -> None:
+    for pid in reversed(pids):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+
+
+def _stop_process_tree(proc: subprocess.Popen[str]) -> tuple[str, str]:
+    """Stop a verifier and all descendants, even if a child detached its group."""
+    descendants = _descendant_pids(proc.pid)
+    _signal_pids(descendants, signal.SIGTERM)
     try:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -1041,6 +1084,8 @@ def _stop_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
     try:
         stdout, stderr = proc.communicate(timeout=2)
     except subprocess.TimeoutExpired:
+        descendants.extend(_descendant_pids(proc.pid))
+        _signal_pids(sorted(set(descendants)), signal.SIGKILL)
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except ProcessLookupError:
@@ -3514,7 +3559,7 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
             except subprocess.TimeoutExpired as exc:
                 timed_out = True
                 any_failure = True
-                stdout, stderr = _stop_process_group(proc)
+                stdout, stderr = _stop_process_tree(proc)
                 if not stdout:
                     stdout = _output_text(exc.stdout)
                 if not stderr:

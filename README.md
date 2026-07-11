@@ -3,7 +3,7 @@
 Generic builder guardrails for Hermes agents running local or OpenAI-compatible
 models.
 
-Current release: **0.8.3**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+Current release: **0.8.4**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 Local coding models can be useful builders, but they tend to fail in predictable
 ways: too many files before the first test, repeated full-suite loops, weak
@@ -70,6 +70,9 @@ project path, and blocked repair edits return that exact recovery call.
 In 0.8.3, verifier timeouts terminate the verifier's whole process group before
 returning. This prevents test runners such as XCTest from surviving as orphaned
 processes, while safely preserving partial timeout output for diagnosis.
+
+In 0.8.4, timeout cleanup also snapshots and terminates detached descendants.
+This covers XCTest runners that create their own process group before hanging.
 
 ## Repository Layout
 

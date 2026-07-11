@@ -56,15 +56,20 @@ class BuilderDoctorToolTests(unittest.TestCase):
             }
         )
 
-    def test_builder_verify_timeout_stops_spawned_process_group(self) -> None:
+    def test_builder_verify_timeout_stops_detached_descendant(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             pid_path = root / "child.pid"
+            command = (
+                "python3 -c \"import pathlib,subprocess,time; "
+                "p=subprocess.Popen(['sleep','60'],start_new_session=True); "
+                "pathlib.Path('child.pid').write_text(str(p.pid)); time.sleep(60)\""
+            )
             result = json.loads(
                 self.tools.builder_verify(
                     {
                         "project_path": str(root),
-                        "commands": ["sleep 60 & echo $! > child.pid; wait"],
+                        "commands": [command],
                         "timeout_seconds": 5,
                     }
                 )

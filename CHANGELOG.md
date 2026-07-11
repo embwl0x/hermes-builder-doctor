@@ -2,6 +2,12 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.4 — 2026-07-11
+
+- Snapshot and terminate verifier descendants directly in addition to the root
+  process group, covering XCTest children that create a separate process group.
+- Strengthen timeout regression coverage with a deliberately detached child.
+
 ## 0.8.3 — 2026-07-11
 
 - Run each verifier in its own process group and terminate the entire group on
