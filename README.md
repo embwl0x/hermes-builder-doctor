@@ -3,7 +3,7 @@
 Generic builder guardrails for Hermes agents running local or OpenAI-compatible
 models.
 
-Current release: **0.8.0**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+Current release: **0.8.1**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 Local coding models can be useful builders, but they tend to fail in predictable
 ways: too many files before the first test, repeated full-suite loops, weak
@@ -55,9 +55,13 @@ For a substantial build, the intended sequence is:
 7. After a pass, `builder_budget(after_verify=true)` and `builder_receipt` close
    the stage.
 
-If unchanged work is verified or receipted again, 0.8.0 returns
+If unchanged work is verified or receipted again, 0.8.0+ returns
 `already_verified` / `already_complete` instead of rerunning the proof. The
 model should follow `next_required` and answer the user rather than cycling.
+
+In 0.8.1, replacing or updating acceptance opens a fresh evidence stage. Swift
+gets a six-edit coherent checkpoint batch, and placeholder-only Swift tests no
+longer satisfy handoff readiness.
 
 ## Repository Layout
 

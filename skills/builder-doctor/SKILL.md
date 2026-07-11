@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.8.0
+version: 0.8.1
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -184,6 +184,8 @@ After the intended verifier commands pass, call `builder_acceptance` with
 a successful post-contract `builder_verify` record must be resolved before
 final receipt. The latest result for each exact command wins. If an evidence
 artifact changes after verification, rerun the verifier before receipt.
+Replacing or updating the acceptance contract opens a new evidence stage and
+invalidates the old completion lock; implement that contract before verifying.
 
 Verification discipline:
 - Once `builder_verify` has been used for a project, continue verification through `builder_verify`; do not switch to the raw terminal for the same test/build/check command.
@@ -193,6 +195,8 @@ Verification discipline:
   follow `next_required`. If it also reports `already_complete: true`, send the
   final answer immediately.
 - If `builder_verify` reports `missing_required_tests`, add the focused test phase next. Do not use `builder_receipt` as final handoff until the test verifier passes.
+- A lone placeholder assertion such as `XCTAssertTrue(true)` or `#expect(true)`
+  is not meaningful Swift test coverage and must be replaced before receipt.
 - If `builder_budget` reports `scope_phase_required` or `builder_receipt`
   blocks on under-covered scope, patch the current kernel toward the listed
   missing anchors and add matching tests before trying receipt again.
@@ -205,6 +209,9 @@ Verification discipline:
 - If a terminal tool guardrail fires during verification, do not repeat the terminal command. Switch back to `builder_verify`, checkpoint with `builder_resume`, or finish with `builder_receipt`.
 - Let `builder_verify` record successful verification automatically; use `builder_resume` for objective, phase, decisions, deferred layers, and any manual verification notes.
 - If the build has gone more than one tool cycle without visible verification after several writes, shrink scope immediately instead of continuing broad file creation.
+- Swift stages may use up to six tracked write/patch calls per checkpoint so
+  mutually dependent model, implementation, integration, and test files can be
+  verified as one coherent state. Other lanes retain the three-call cap.
 - If you feel the project needs more than 10-12 files, split it into stage 1 kernel, stage 2 hardening, and stage 3 integrations; only build the current stage.
 
 Swift repair loop:

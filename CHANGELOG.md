@@ -2,6 +2,17 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.1 — 2026-07-11
+
+- Reopen the edit stage when `builder_acceptance` is replaced or updated, so a
+  previous successful verifier cannot receipt-lock a new evidence contract.
+- Allow six tracked edits per Swift checkpoint while retaining the three-edit
+  cap for other language lanes.
+- Treat placeholder-only Swift tests such as `XCTAssertTrue(true)` and
+  `#expect(true)` as missing meaningful coverage.
+- Add regressions for acceptance-stage reopening, Swift batch sizing, and
+  placeholder-test rejection based on a real long-context ModelPulse run.
+
 ## 0.8.0 — 2026-07-11
 
 - Cache unchanged successful `builder_verify` calls as `already_verified`

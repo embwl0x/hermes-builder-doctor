@@ -161,6 +161,92 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertEqual(block["action"], "block")
         self.assertIn("write budget", block["message"])
 
+    def test_swift_write_gate_allows_coherent_six_edit_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Package.swift").write_text(
+                "// swift-tools-version: 6.0\nimport PackageDescription\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Build a Swift runtime parser with focused tests.")
+
+            for index in range(6):
+                allowed = self.tools.builder_pre_tool_call(
+                    tool_name="write_file",
+                    args={"path": str(root / f"File{index}.swift")},
+                )
+                self.assertIsNone(allowed)
+
+            blocked = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "File6.swift")},
+            )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("write budget", blocked["message"])
+
+    def test_new_acceptance_contract_reopens_verified_stage_for_edits(self) -> None:
+        command = "python3 -m compileall -q ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Build and prove a parser feature.")
+            self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+
+            locked = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "before_contract.py")},
+            )
+            acceptance = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "parser",
+                                "description": "Parser source and tests exist and pass.",
+                                "evidence_paths": ["parser.py", "test_parser.py"],
+                                "verification_commands": [command],
+                            }
+                        ],
+                    }
+                )
+            )
+            reopened = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "parser.py")},
+            )
+            state = json.loads((root / ".hermes-builder" / "state.json").read_text(encoding="utf-8"))
+
+        self.assertIsNotNone(locked)
+        self.assertFalse(acceptance["all_satisfied"])
+        self.assertIsNone(reopened)
+        self.assertIsNone(state["guard"]["last_verify_success"])
+        self.assertFalse(state["guard"]["receipt_required"])
+        self.assertTrue(state["guard"]["scope_phase_required"])
+
+    def test_swift_placeholder_only_test_is_not_handoff_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Package.swift").write_text(
+                "// swift-tools-version: 6.0\nimport PackageDescription\n",
+                encoding="utf-8",
+            )
+            tests = root / "Tests" / "CoreTests"
+            tests.mkdir(parents=True)
+            (tests / "CoreTests.swift").write_text(
+                "import XCTest\nfinal class CoreTests: XCTestCase {\n"
+                "  func testPlaceholder() { XCTAssertTrue(true) }\n}\n",
+                encoding="utf-8",
+            )
+            reasons = self.tools._missing_required_tests(root)
+
+        self.assertTrue(any("trivial placeholder" in reason for reason in reasons))
+
     def test_source_edit_requires_saved_objective_after_state_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1145,10 +1145,31 @@ def _missing_required_tests(root: Path, project_map: Optional[Dict[str, Any]] = 
         swift_info = project_map.get("swift", {}) or {}
         targets = swift_info.get("targets", {}) if isinstance(swift_info, dict) else {}
         test_targets = targets.get("test", []) or []
+        swift_test_files = [
+            path for path in root.glob("Tests/**/*.swift") if path.is_file()
+        ]
         if test_targets and not swift_info.get("test_files"):
             reasons.append("SwiftPM declares a test target but no sampled XCTest files exist under Tests/<Target>.")
         elif swift_info.get("swift_file_count", 0) > 0 and not swift_info.get("test_files"):
             reasons.append("Swift source exists but no sampled XCTest files exist; add Tests/<Target>Tests coverage before receipt.")
+        elif swift_test_files:
+            test_source = "\n".join(
+                path.read_text(encoding="utf-8", errors="ignore")
+                for path in swift_test_files
+            )
+            declaration_count = (
+                len(re.findall(r"(?m)^\s*@Test\b", test_source))
+                + len(re.findall(r"\bfunc\s+test[A-Za-z0-9_]*\s*\(", test_source))
+            )
+            placeholder_assertion = bool(
+                re.search(r"\bXCTAssertTrue\s*\(\s*true\s*\)", test_source)
+                or re.search(r"#expect\s*\(\s*true\s*\)", test_source)
+            )
+            placeholder_name = bool(re.search(r"(?i)\bplaceholder\b", test_source))
+            if declaration_count <= 1 and (placeholder_assertion or placeholder_name):
+                reasons.append(
+                    "Swift tests contain only a trivial placeholder; add focused behavioral assertions before receipt."
+                )
     elif profile == "python":
         python_info = project_map.get("python", {}) or {}
         if python_info.get("python_file_count", 0) > 1 and not python_info.get("test_files"):
@@ -1175,6 +1196,16 @@ def _language_budget_defaults(root: Path) -> Dict[str, int]:
         "go": {"max_source_files": 5, "max_test_files": 2, "max_source_dirs": 2},
     }
     return defaults.get(profile, {"max_source_files": 8, "max_test_files": 4, "max_source_dirs": 4})
+
+
+def _write_call_limit(root: Path) -> int:
+    """Return a coherent per-checkpoint edit batch for the detected language.
+
+    Swift features frequently require a model, implementation, integration, and
+    test file to compile together. A three-call global cap fragmented those
+    changes and forced verification of deliberately incomplete states.
+    """
+    return 6 if _detect_language_profile(root) == "swift" else 3
 
 
 def _language_stage_policy(root: Path) -> Dict[str, Any]:
@@ -1647,7 +1678,8 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
     if guard.get("last_verify_success") is False and isinstance(repair_remaining, int) and repair_remaining <= 0:
         guard["verify_required"] = True
 
-    if guard.get("verify_required") or _safe_int(guard.get("writes_since_budget", 0), 0, min_value=0) >= 3:
+    write_call_limit = _write_call_limit(root)
+    if guard.get("verify_required") or _safe_int(guard.get("writes_since_budget", 0), 0, min_value=0) >= write_call_limit:
         guard["verify_required"] = True
         return _write_guard_block(
             root,
@@ -1670,7 +1702,7 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
         guard["repair_patches_remaining"] = repair_remaining
         if repair_remaining <= 0:
             guard["verify_required"] = True
-    elif guard["writes_since_budget"] >= 3:
+    elif guard["writes_since_budget"] >= write_call_limit:
         guard["verify_required"] = True
 
     state["guard"] = guard
@@ -3855,7 +3887,24 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
     guard["last_acceptance_at"] = _now_iso()
     guard["last_acceptance_reason"] = evaluation["reason"]
     if action in {"set", "replace", "update"}:
-        guard["last_receipt_ready"] = False
+        # A changed contract defines a new stage. Prior verification remains in
+        # history, but it must not keep the new evidence batch receipt-locked or
+        # count as current acceptance proof (the contract baseline handles the
+        # latter). Reopen a coherent edit window immediately.
+        guard.update({
+            "last_verify_success": None,
+            "writes_since_budget": 0,
+            "writes_since_verify": 0,
+            "repair_patches_remaining": None,
+            "failure_plan_required": False,
+            "verify_required": False,
+            "receipt_required": False,
+            "last_budget_after_verify": False,
+            "last_receipt_ready": False,
+            "test_phase_required": False,
+            "scope_phase_required": True,
+            "last_scope_contract_reason": "Acceptance contract changed; implement and reverify the new evidence set.",
+        })
     state["guard"] = guard
     try:
         _save_state(root, state)
@@ -4201,9 +4250,10 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "Call builder_receipt if this stage is complete.",
         ])
     else:
+        write_call_limit = _write_call_limit(root)
         actions.extend([
             "The current phase is within budget.",
-            "The next source/test batch is capped at two files or three write_file/patch calls.",
+            f"The next source/test batch is capped at {write_call_limit} write_file/patch calls.",
             "After that capped batch, run builder_budget and builder_verify before expanding scope.",
             f"Use the {language_policy['preset']} preset: {language_policy['verify']}.",
         ])
@@ -4304,6 +4354,7 @@ def builder_budget(args: Dict[str, Any], **_: Any) -> str:
             "state_warning": state_warning,
             "writes_since_budget": guard.get("writes_since_budget", 0),
             "writes_since_verify": guard.get("writes_since_verify", 0),
+            "write_call_limit": _write_call_limit(root),
             "verify_required": bool(guard.get("verify_required", False)),
             "receipt_required": bool(guard.get("receipt_required", False)),
             "objective_required": bool(guard.get("objective_required", False)),
