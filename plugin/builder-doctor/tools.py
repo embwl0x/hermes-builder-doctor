@@ -1631,8 +1631,10 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
             "failure-plan-required",
             (
                 "Builder Doctor blocked this repair edit because the last builder_verify failed. "
-                "Call builder_failure_plan with the failed verifier output first, then patch only "
-                "the first diagnostic it identifies."
+                f"Call builder_failure_plan now with only "
+                f"{{\"project_path\": \"{root}\"}}; it automatically loads the latest failed "
+                "verifier output. Do not call another tool first. Then patch only the first "
+                "diagnostic it identifies."
             ),
         )
 
@@ -2593,6 +2595,20 @@ def builder_failure_plan(args: Dict[str, Any], **_: Any) -> str:
         })
 
     failure = _extract_failure_input(args)
+    if not failure["command"] and not failure["output_tail"]:
+        try:
+            saved_state = _load_state(root)
+            saved_guard = _guard_from_state(saved_state)
+            saved_failure = saved_guard.get("last_failure")
+            if isinstance(saved_failure, dict):
+                failure = {
+                    "command": str(saved_failure.get("command") or ""),
+                    "output_tail": str(saved_failure.get("output_tail") or ""),
+                    "timed_out": bool(saved_failure.get("timed_out")),
+                    "zero_tests": bool(saved_failure.get("zero_tests")),
+                }
+        except Exception:
+            pass
     command = failure["command"] or "builder_verify"
     output_tail = failure["output_tail"]
     timed_out = bool(failure["timed_out"])
@@ -3588,18 +3604,28 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
             guard["last_missing_tests_reason"] = ""
             guard["repair_patches_remaining"] = 2
             guard["failure_plan_required"] = True
+            first_failure = failures[0] if failures and isinstance(failures[0], dict) else {}
+            guard["last_failure"] = {
+                "command": str(first_failure.get("command") or ""),
+                "output_tail": str(first_failure.get("output_tail") or "")[-8000:],
+                "timed_out": bool(first_failure.get("timed_out")),
+                "zero_tests": bool(first_failure.get("zero_tests_detected")),
+                "recorded_at": _now_iso(),
+            }
         elif missing_required_tests:
             guard["receipt_required"] = False
             guard["test_phase_required"] = True
             guard["last_missing_tests_reason"] = "; ".join(missing_required_tests)[:1000]
             guard["repair_patches_remaining"] = None
             guard["failure_plan_required"] = False
+            guard.pop("last_failure", None)
         else:
             guard["receipt_required"] = True
             guard["test_phase_required"] = False
             guard["last_missing_tests_reason"] = ""
             guard["repair_patches_remaining"] = None
             guard["failure_plan_required"] = False
+            guard.pop("last_failure", None)
         state["guard"] = guard
         _save_state(root, state)
         state_recorded = True

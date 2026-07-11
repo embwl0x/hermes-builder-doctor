@@ -1,6 +1,6 @@
 [project]
 name = "hermes-builder-doctor"
-version = "0.8.1"
+version = "0.8.2"
 description = "Generic Hermes builder guardrail tools for local coding models"
 readme = "README.md"
 requires-python = ">=3.10"

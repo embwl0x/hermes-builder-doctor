@@ -2,6 +2,15 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.2 — 2026-07-11
+
+- Persist a compact latest failed-verifier record in project guard state.
+- Allow `builder_failure_plan` to recover the latest failure from only
+  `project_path`, so local models do not need to retain a large verifier result
+  across context compaction.
+- Make blocked repair edits return the exact project-scoped recovery call.
+- Add regression coverage for compacted-session failure-plan recovery.
+
 ## 0.8.1 — 2026-07-11
 
 - Reopen the edit stage when `builder_acceptance` is replaced or updated, so a

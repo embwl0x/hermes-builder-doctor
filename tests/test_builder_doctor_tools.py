@@ -441,11 +441,39 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertFalse(verify["success"])
         self.assertIsNotNone(blocked_before_plan)
         self.assertIn("builder_failure_plan", blocked_before_plan["message"])
+        self.assertIn(str(root), blocked_before_plan["message"])
+        self.assertIn("automatically loads", blocked_before_plan["message"])
         self.assertTrue(plan["success"])
         self.assertIsNone(first)
         self.assertIsNone(second)
         self.assertIsNotNone(third)
         self.assertIn("smallest relevant command", third["message"])
+
+    def test_failure_plan_loads_latest_failed_verify_from_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root)
+            verify = json.loads(
+                self.tools.builder_verify(
+                    {
+                        "project_path": str(root),
+                        "commands": ["python3 -c 'raise RuntimeError(\"stored failure\")'"],
+                    }
+                )
+            )
+            plan = json.loads(
+                self.tools.builder_failure_plan({"project_path": str(root)})
+            )
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertFalse(verify["success"])
+        self.assertTrue(plan["success"])
+        self.assertIn("python3 -c", plan["command"])
+        self.assertIn("stored failure", json.dumps(plan))
+        self.assertFalse(state["guard"]["failure_plan_required"])
 
     def test_verify_blocks_dependency_mutation_commands(self) -> None:
         blocked = [
