@@ -5,7 +5,7 @@ Builder Doctor has two parts:
 1. A Hermes plugin at `plugin/builder-doctor`.
 2. A Hermes skill card at `skills/builder-doctor`.
 
-The current plugin and skill version is 0.8.4. Upgrades replace both parts
+The current plugin and skill version is 0.8.5. Upgrades replace both parts
 together so tool schemas and agent guidance stay in sync.
 
 ## Ask A Hermes Agent To Install It
@@ -112,6 +112,8 @@ Do not overwrite a working production config with the example snippets.
   runners do not remain in memory after the tool returns.
 - 0.8.4 also terminates descendants that detach into a new process group, as
   XCTest does on macOS.
+- 0.8.5 permits verified build-output copies into macOS Applications folders
+  without weakening source/config mutation guards.
 
 After any upgrade, restart Hermes. Existing project state remains readable, but
 an old acceptance contract may require one fresh `builder_verify` run before it

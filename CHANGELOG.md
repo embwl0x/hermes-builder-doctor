@@ -2,6 +2,15 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.5 — 2026-07-11
+
+- Allow a successfully verified artifact under a project's build-output folder
+  to be copied into `/Applications` or the user's Applications folder.
+- Continue blocking terminal-based source/config mutations and unverified or
+  arbitrary outbound copies.
+- Prefer explicit command path candidates over ambient terminal cwd when
+  locating the mapped project for a terminal operation.
+
 ## 0.8.4 — 2026-07-11
 
 - Snapshot and terminate verifier descendants directly in addition to the root

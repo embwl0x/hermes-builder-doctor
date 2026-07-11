@@ -806,6 +806,29 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertEqual(block["action"], "block")
         self.assertIn("terminal file mutation", block["message"])
 
+    def test_verified_build_artifact_can_be_exported_to_applications(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / ".build" / "release" / "SampleApp"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("binary", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+            self.tools.builder_verify(
+                {"project_path": str(root), "commands": ["true"]}
+            )
+
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "command": (
+                        f"cp -f {artifact} /Applications/SampleApp.app/Contents/MacOS/SampleApp "
+                        "&& echo replaced"
+                    ),
+                },
+            )
+
+        self.assertIsNone(allowed)
+
     def test_receipt_not_ready_after_zero_test_verification(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

@@ -1474,14 +1474,14 @@ def _root_from_tool_args(tool_name: str, args: Any) -> Optional[Path]:
         workdir = _expand_tool_path(args.get("workdir"))
         if workdir:
             candidates.append(workdir)
-        else:
-            cwd = _expand_tool_path(os.getenv("TERMINAL_CWD") or os.getcwd())
-            if cwd:
-                candidates.append(cwd)
         for rel in _terminal_command_path_candidates(args.get("command")):
             expanded = _expand_tool_path(rel, base=base)
             if expanded:
                 candidates.append(expanded)
+        if not workdir:
+            cwd = _expand_tool_path(os.getenv("TERMINAL_CWD") or os.getcwd())
+            if cwd:
+                candidates.append(cwd)
 
     for candidate in candidates:
         root = _find_builder_root(candidate)
@@ -1542,6 +1542,47 @@ def _is_terminal_file_mutation_command(command: str) -> bool:
         r"(?:^|[;&|]\s*)(?:rm|cp|mv|touch)\b",
     ]
     return any(re.search(pattern, command) for pattern in patterns)
+
+
+def _is_copy_only_terminal_command(command: str) -> bool:
+    try:
+        parts = [part.strip() for part in re.split(r"&&|;", command) if part.strip()]
+        if not parts or Path(shlex.split(parts[0])[0]).name != "cp":
+            return False
+        return all(Path(shlex.split(part)[0]).name == "echo" for part in parts[1:])
+    except (IndexError, ValueError):
+        return False
+
+
+def _is_verified_artifact_export(command: str, root: Path, guard: Dict[str, Any]) -> bool:
+    """Allow a verified build artifact to be copied into a macOS app install dir."""
+    if guard.get("last_verify_success") is not True:
+        return False
+    try:
+        parts = [part.strip() for part in re.split(r"&&|;", command) if part.strip()]
+        if not parts:
+            return False
+        tokens = shlex.split(parts[0])
+        if not tokens or Path(tokens[0]).name != "cp":
+            return False
+        positional = [token for token in tokens[1:] if not token.startswith("-")]
+        if len(positional) != 2:
+            return False
+        source = _expand_tool_path(positional[0], base=root)
+        destination = _expand_tool_path(positional[1], base=root)
+        if source is None or destination is None or not source.exists():
+            return False
+        if not _is_within_root(source, root) or _is_within_root(destination, root):
+            return False
+        relative = source.relative_to(root.resolve())
+        if not relative.parts or relative.parts[0] not in {".build", "build", "dist", "out"}:
+            return False
+        install_roots = [Path("/Applications"), Path.home() / "Applications"]
+        if not any(_is_within_root(destination, install_root) for install_root in install_roots):
+            return False
+        return all(Path(shlex.split(part)[0]).name == "echo" for part in parts[1:])
+    except (ValueError, OSError):
+        return False
 
 
 def _is_dependency_or_env_mutation_command(command: str) -> bool:
@@ -1625,7 +1666,7 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
                     "builder_budget(after_verify=true), and builder_receipt on success."
                 ),
             }
-        if _is_terminal_file_mutation_command(command):
+        if _is_terminal_file_mutation_command(command) and not _is_copy_only_terminal_command(command):
             return {
                 "action": "block",
                 "message": (
@@ -1643,8 +1684,10 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
     state["guard"] = guard
 
     anchored_root = _expand_tool_path(guard.get("root_anchor")) or root
+    command = str(args.get("command", "")) if tool_name == "terminal" and isinstance(args, dict) else ""
+    verified_artifact_export = _is_verified_artifact_export(command, anchored_root, guard)
     for candidate in _boundary_candidate_paths(tool_name, args, anchored_root):
-        if not _is_within_root(candidate, anchored_root):
+        if not _is_within_root(candidate, anchored_root) and not verified_artifact_export:
             return _write_guard_block(
                 root,
                 state,
@@ -1658,7 +1701,6 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
             )
 
     if tool_name == "terminal":
-        command = str(args.get("command", "")) if isinstance(args, dict) else ""
         if guard.get("builder_verify_used") and _is_raw_verifier_command(command):
             return _write_guard_block(
                 root,
@@ -1672,6 +1714,8 @@ def builder_pre_tool_call(tool_name: str = "", args: Any = None, **_: Any) -> Op
                 ),
             )
         if _is_terminal_file_mutation_command(command):
+            if verified_artifact_export:
+                return None
             return _write_guard_block(
                 root,
                 state,
