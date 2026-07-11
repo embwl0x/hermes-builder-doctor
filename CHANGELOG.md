@@ -2,6 +2,15 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.6 — 2026-07-11
+
+- Inspect terminal `cd` destinations and directly executed relative or absolute
+  script paths as project-boundary candidates.
+- Block commands such as `cd /another/project && ./script/install_app.sh` when
+  the destination is outside the mapped project root.
+- Preserve same-project script execution and the verified macOS artifact-export
+  exception introduced in 0.8.5.
+
 ## 0.8.5 — 2026-07-11
 
 - Allow a successfully verified artifact under a project's build-output folder

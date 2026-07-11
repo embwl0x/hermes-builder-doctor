@@ -1399,7 +1399,9 @@ def _patch_file_candidates(patch_text: Any) -> List[str]:
     return candidates
 
 
-def _terminal_command_path_candidates(command: Any) -> List[str]:
+def _terminal_command_path_candidates(
+    command: Any, base: Optional[Path] = None
+) -> List[str]:
     if not isinstance(command, str):
         return []
     candidates: List[str] = []
@@ -1413,18 +1415,56 @@ def _terminal_command_path_candidates(command: Any) -> List[str]:
             value = match.group(1).strip().strip("\"'")
             if value and value != "/dev/null":
                 candidates.append(value)
+    current_dir = base or _expand_tool_path(os.getenv("TERMINAL_CWD") or os.getcwd())
     try:
         for part in re.split(r"[;&|]+", command):
             tokens = shlex.split(part)
             if not tokens:
                 continue
-            executable = Path(tokens[0]).name
+
+            while tokens and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", tokens[0]):
+                tokens.pop(0)
+            if tokens and Path(tokens[0]).name in {"builtin", "command"}:
+                tokens.pop(0)
+            if not tokens:
+                continue
+
+            executable_token = tokens[0]
+            executable = Path(executable_token).name
+            if executable == "cd":
+                operands = [token for token in tokens[1:] if token != "--"]
+                destination = next(
+                    (token for token in operands if not token.startswith("-")), None
+                )
+                if destination:
+                    expanded = _expand_tool_path(destination, base=current_dir)
+                    if expanded:
+                        candidates.append(str(expanded))
+                        current_dir = expanded
+                continue
+
+            if "/" in executable_token or executable_token.startswith("~"):
+                expanded = _expand_tool_path(executable_token, base=current_dir)
+                system_roots = (
+                    Path("/bin"),
+                    Path("/sbin"),
+                    Path("/usr"),
+                    Path("/opt/homebrew"),
+                    Path("/Applications/Xcode.app/Contents/Developer"),
+                    Path("/Library/Developer/CommandLineTools"),
+                )
+                if expanded and not any(
+                    _is_within_root(expanded, root) for root in system_roots
+                ):
+                    candidates.append(str(expanded))
+
             if executable not in {"rm", "cp", "mv", "touch"}:
                 continue
             for token in tokens[1:]:
                 if token.startswith("-"):
                     continue
-                candidates.append(token)
+                expanded = _expand_tool_path(token, base=current_dir)
+                candidates.append(str(expanded) if expanded else token)
     except Exception:
         pass
     return candidates
@@ -1474,7 +1514,7 @@ def _root_from_tool_args(tool_name: str, args: Any) -> Optional[Path]:
         workdir = _expand_tool_path(args.get("workdir"))
         if workdir:
             candidates.append(workdir)
-        for rel in _terminal_command_path_candidates(args.get("command")):
+        for rel in _terminal_command_path_candidates(args.get("command"), base=base):
             expanded = _expand_tool_path(rel, base=base)
             if expanded:
                 candidates.append(expanded)
@@ -1510,7 +1550,7 @@ def _boundary_candidate_paths(tool_name: str, args: Any, root: Path) -> List[Pat
         workdir = _expand_tool_path(args.get("workdir"))
         if workdir:
             candidates.append(workdir)
-        for rel in _terminal_command_path_candidates(args.get("command")):
+        for rel in _terminal_command_path_candidates(args.get("command"), base=base):
             expanded = _expand_tool_path(rel, base=base)
             if expanded:
                 candidates.append(expanded)

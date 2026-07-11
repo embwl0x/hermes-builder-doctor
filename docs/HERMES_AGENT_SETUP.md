@@ -3,7 +3,7 @@
 This guide is for installing Builder Doctor into another Hermes agent, including
 agents backed by smaller local models.
 
-It describes the 0.8.5 workflow. Plugin and skill versions should match.
+It describes the 0.8.6 workflow. Plugin and skill versions should match.
 
 If you just want the shortest path, use `docs/QUICKSTART.md` first.
 
@@ -103,7 +103,8 @@ builder_receipt
 Builder Doctor also registers `pre_tool_call` and `post_tool_call` hooks. The
 hooks stay inactive until a project has a `.hermes-builder/state.json` marker,
 which Builder Doctor tools create or update. The marker contains workflow state,
-not source code or model transcripts.
+not source code or model transcripts. Once mapped, terminal commands that change
+into or directly execute a path outside that project are blocked.
 
 If the toolset is not visible, run:
 

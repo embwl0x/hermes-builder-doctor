@@ -3,7 +3,7 @@
 Generic builder guardrails for Hermes agents running local or OpenAI-compatible
 models.
 
-Current release: **0.8.5**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+Current release: **0.8.6**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 Local coding models can be useful builders, but they tend to fail in predictable
 ways: too many files before the first test, repeated full-suite loops, weak
@@ -31,7 +31,8 @@ Hermes configuration, API keys, session logs, or machine-specific paths.
   passing verification
   requires budget/receipt before more edits, failed verification allows two
   repair patches before another check, edits are anchored to the mapped project
-  root, and raw terminal verifier loops are redirected back to `builder_verify`.
+  root, terminal commands cannot `cd` into or execute scripts from another
+  project, and raw terminal verifier loops are redirected back to `builder_verify`.
 
 Supported lanes:
 
@@ -77,6 +78,10 @@ This covers XCTest runners that create their own process group before hanging.
 In 0.8.5, a verified build artifact may be copied from the project's build
 output into a macOS Applications folder. Terminal-based source edits and
 unverified exports remain blocked.
+
+In 0.8.6, project-root anchoring also inspects terminal working-directory
+changes and directly executed script paths. A mapped build cannot silently
+switch into another repository and run that repository's installer.
 
 ## Repository Layout
 

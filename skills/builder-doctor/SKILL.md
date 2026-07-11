@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.8.5
+version: 0.8.6
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -35,7 +35,8 @@ metadata:
 Use the builder toolkit to make complex builds incremental, resumable, and verifiable.
 For non-trivial software build prompts, this is the natural default workflow, even if the user does not name the skill or tools.
 Builder Doctor also installs Hermes hooks that enforce this flow inside projects
-marked by `.hermes-builder/state.json`.
+marked by `.hermes-builder/state.json`. Terminal commands may not change into or
+execute a path outside the mapped project root.
 
 ## When to use
 

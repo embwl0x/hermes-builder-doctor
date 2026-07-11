@@ -806,6 +806,81 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertEqual(block["action"], "block")
         self.assertIn("terminal file mutation", block["message"])
 
+    def test_terminal_cd_then_script_outside_mapped_project_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            outside = Path(tmp) / "NativeAgent"
+            root.mkdir()
+            (outside / "script").mkdir(parents=True)
+            self.tools.builder_map({"project_path": str(root)})
+
+            block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "project_path": str(root),
+                    "command": f"cd {outside} && ./script/install_app.sh",
+                },
+            )
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["action"], "block")
+        self.assertIn("outside the mapped project root", block["message"])
+
+    def test_terminal_absolute_script_outside_mapped_project_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            outside_script = Path(tmp) / "NativeAgent" / "script" / "install_app.sh"
+            root.mkdir()
+            outside_script.parent.mkdir(parents=True)
+            outside_script.write_text("#!/bin/sh\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+
+            block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "project_path": str(root),
+                    "command": str(outside_script),
+                },
+            )
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["action"], "block")
+        self.assertIn("outside the mapped project root", block["message"])
+
+    def test_terminal_cd_then_script_inside_mapped_project_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            script = root / "script" / "build_app.sh"
+            script.parent.mkdir(parents=True)
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "project_path": str(root),
+                    "command": f"cd {root} && ./script/build_app.sh",
+                },
+            )
+
+        self.assertIsNone(allowed)
+
+    def test_terminal_absolute_system_executable_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            self.tools.builder_map({"project_path": str(root)})
+
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "project_path": str(root),
+                    "command": "/usr/bin/true",
+                },
+            )
+
+        self.assertIsNone(allowed)
+
     def test_verified_build_artifact_can_be_exported_to_applications(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
