@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shlex
 import subprocess
-import sys
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2662,7 +2662,6 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
     # --- 0) SwiftPM/XCTest structure risks ---
     if focus in ("all", "swift", "swiftpm", "testing", "build"):
         if swift_info.get("is_swift_project"):
-            package_text = _swift_package_text(root)
             imports = set(swift_info.get("imports", []))
             ui_imports = sorted(imports.intersection({"SwiftUI", "AppKit", "UIKit", "SpriteKit", "SceneKit"}))
             if swift_info.get("package_file") and not any(swift_info.get("targets", {}).values()):
@@ -2753,7 +2752,6 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
     if focus in ("all", "python", "pyproject", "testing", "build", "package"):
         if python_info.get("is_python_project"):
             pyproject = _read_toml(root / "pyproject.toml") or {}
-            project = pyproject.get("project") if isinstance(pyproject.get("project"), dict) else {}
             tool = pyproject.get("tool") if isinstance(pyproject.get("tool"), dict) else {}
             if python_info.get("project_file") and not python_info.get("project_name"):
                 findings.append({
@@ -3440,6 +3438,7 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
     state_warning = ""
     verification_records = [
         {
+            "source": "builder_verify",
             "command": item.get("command", ""),
             "exit_code": item.get("exit_code"),
             "timed_out": bool(item.get("timed_out")),
@@ -3453,11 +3452,15 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
     ]
     try:
         state = _load_state(root)
-        state["verification"] = _append_unique(
-            list(state.get("verification", [])),
-            verification_records,
-            max_items=120,
-        )
+        evidence_snapshot = _acceptance_evidence_snapshot(root, state)
+        for record in verification_records:
+            record["acceptance_evidence"] = evidence_snapshot
+        existing_verification = state.get("verification") or []
+        if not isinstance(existing_verification, list):
+            existing_verification = []
+        # Verification retries are ordered evidence, not set members. Preserve
+        # repeated results so the latest outcome for an exact command wins.
+        state["verification"] = (existing_verification + verification_records)[-120:]
         guard = _anchor_guard(root, _guard_from_state(state))
         guard["builder_verify_used"] = True
         guard["last_verify_success"] = not any_failure
@@ -3501,6 +3504,72 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         "state_recorded": state_recorded,
         "state_warning": state_warning,
     })
+
+
+def _evidence_fingerprint(root: Path, evidence_path: str) -> Optional[Dict[str, Any]]:
+    candidate = (root / evidence_path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    if not candidate.exists() or candidate == root or (root / ".hermes-builder") in candidate.parents:
+        return None
+
+    stat = candidate.stat()
+    if candidate.is_file():
+        digest = ""
+        if stat.st_size <= 16 * 1024 * 1024:
+            hasher = hashlib.sha256()
+            with candidate.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+            digest = hasher.hexdigest()
+        return {
+            "kind": "file",
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+            "sha256": digest,
+        }
+    if candidate.is_dir():
+        entries: List[str] = []
+        for path in _walk_project_files(candidate, max_files=500):
+            resolved = path.resolve()
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                continue
+            try:
+                item_stat = resolved.stat()
+            except OSError:
+                continue
+            entries.append(
+                f"{_rel(resolved, candidate)}:{item_stat.st_size}:{item_stat.st_mtime_ns}"
+            )
+        payload = "\n".join(sorted(entries)).encode("utf-8")
+        return {
+            "kind": "directory",
+            "entries": len(entries),
+            "manifest_sha256": hashlib.sha256(payload).hexdigest(),
+        }
+    return {"kind": "other", "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+
+
+def _acceptance_evidence_snapshot(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
+    contract = state.get("acceptance_contract")
+    if not isinstance(contract, dict):
+        return {}
+    criteria = contract.get("criteria")
+    if not isinstance(criteria, list):
+        return {}
+    snapshot: Dict[str, Any] = {}
+    for criterion in criteria:
+        if not isinstance(criterion, dict):
+            continue
+        for evidence_path in _listify(criterion.get("evidence_paths")):
+            rel = str(evidence_path).strip()
+            if rel and rel not in snapshot:
+                snapshot[rel] = _evidence_fingerprint(root, rel)
+    return snapshot
 
 
 def _normalize_acceptance_criteria(
@@ -3606,7 +3675,11 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
 
     if action == "clear":
         try:
-            state["acceptance_contract"] = {"criteria": []}
+            state["acceptance_contract"] = {
+                "criteria": [],
+                "verification_baseline": len(state.get("verification") or []),
+                "updated_at": _now_iso(),
+            }
             guard = _anchor_guard(root, _guard_from_state(state))
             guard.update({
                 "acceptance_required": False,
@@ -3656,8 +3729,15 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
                 "errors": validation_errors,
                 "state": state,
             })
+        verification = state.get("verification") or []
+        verification_baseline = len(verification) if isinstance(verification, list) else 0
+        contract_updated_at = _now_iso()
         if action in {"set", "replace"}:
-            state["acceptance_contract"] = {"criteria": normalized}
+            state["acceptance_contract"] = {
+                "criteria": normalized,
+                "verification_baseline": verification_baseline,
+                "updated_at": contract_updated_at,
+            }
         else:
             existing = state.get("acceptance_contract") or {}
             existing_criteria = existing.get("criteria") or []
@@ -3670,7 +3750,11 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
             }
             for item in normalized:
                 merged_by_id[item["id"]] = item
-            state["acceptance_contract"] = {"criteria": list(merged_by_id.values())}
+            state["acceptance_contract"] = {
+                "criteria": list(merged_by_id.values()),
+                "verification_baseline": verification_baseline,
+                "updated_at": contract_updated_at,
+            }
         try:
             _save_state(root, state)
         except Exception as exc:
@@ -3685,7 +3769,7 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
     evaluation = _evaluate_acceptance(root, state)
     receipt_ready = evaluation["all_satisfied"]
     guard = _anchor_guard(root, _guard_from_state(state))
-    guard["acceptance_required"] = bool(criteria)
+    guard["acceptance_required"] = _acceptance_required(state)
     guard["acceptance_ready"] = receipt_ready
     guard["last_acceptance_at"] = _now_iso()
     guard["last_acceptance_reason"] = evaluation["reason"]
@@ -3709,11 +3793,35 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
     })
 
 
+def _acceptance_required(state: Dict[str, Any]) -> bool:
+    contract = state.get("acceptance_contract")
+    if contract is None:
+        return False
+    if not isinstance(contract, dict):
+        return bool(contract)
+    criteria = contract.get("criteria", [])
+    return bool(criteria) or not isinstance(criteria, list)
+
+
 def _evaluate_acceptance(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
-    contract = state.get("acceptance_contract") or {}
-    criteria = contract.get("criteria") or []
+    contract = state.get("acceptance_contract")
+    if contract is None:
+        contract = {"criteria": []}
+    if not isinstance(contract, dict):
+        return {
+            "satisfied": [],
+            "unsatisfied": [{"id": "", "satisfied": False, "invalid": ["Malformed acceptance contract."]}],
+            "all_satisfied": False,
+            "reason": "Malformed acceptance contract: expected an object.",
+        }
+    criteria = contract.get("criteria", [])
     if not isinstance(criteria, list):
-        criteria = []
+        return {
+            "satisfied": [],
+            "unsatisfied": [{"id": "", "satisfied": False, "invalid": ["Malformed criteria collection."]}],
+            "all_satisfied": False,
+            "reason": "Malformed acceptance contract: criteria must be a list.",
+        }
     if not criteria:
         return {
             "satisfied": [],
@@ -3723,19 +3831,34 @@ def _evaluate_acceptance(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
         }
 
     verification = state.get("verification") or []
+    if not isinstance(verification, list):
+        verification = []
+    try:
+        verification_baseline = int(contract.get("verification_baseline", 0) or 0)
+    except (TypeError, ValueError):
+        verification_baseline = 0
+    verification_baseline = max(0, min(len(verification), verification_baseline))
+    latest_by_command: Dict[str, Dict[str, Any]] = {}
+    for item in verification[verification_baseline:]:
+        if not isinstance(item, dict):
+            continue
+        command = str(item.get("command", "")).strip()
+        if command:
+            latest_by_command[command] = item
     successful_commands = {
-        str(item.get("command", "")).strip()
-        for item in verification
-        if isinstance(item, dict)
+        command
+        for command, item in latest_by_command.items()
+        if item.get("source") == "builder_verify"
         and item.get("exit_code") == 0
         and not item.get("timed_out")
         and not item.get("zero_tests_detected")
-        and str(item.get("command", "")).strip()
     }
+    current_evidence = _acceptance_evidence_snapshot(root, state)
 
     satisfied: List[Dict[str, Any]] = []
     unsatisfied: List[Dict[str, Any]] = []
     reasons: List[str] = []
+    seen_ids: set[str] = set()
     for criterion in criteria:
         if not isinstance(criterion, dict):
             unsatisfied.append({"id": "", "satisfied": False, "invalid": ["Criterion is not an object."]})
@@ -3755,6 +3878,9 @@ def _evaluate_acceptance(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
             invalid.append("no evidence paths")
         if not verification_commands:
             invalid.append("no verification commands")
+        if criterion_id and criterion_id in seen_ids:
+            invalid.append("duplicate id")
+        seen_ids.add(criterion_id)
 
         missing_evidence: List[str] = []
         unsafe_evidence: List[str] = []
@@ -3772,7 +3898,27 @@ def _evaluate_acceptance(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
                 missing_evidence.append(rel)
 
         missing_verification = [cmd for cmd in verification_commands if cmd not in successful_commands]
-        criterion_satisfied = not invalid and not missing_evidence and not unsafe_evidence and not missing_verification
+        changed_evidence: List[str] = []
+        for command in verification_commands:
+            if command not in successful_commands:
+                continue
+            recorded_evidence = latest_by_command[command].get("acceptance_evidence")
+            if not isinstance(recorded_evidence, dict):
+                changed_evidence.extend(evidence_paths)
+                continue
+            for evidence_path in evidence_paths:
+                if evidence_path in missing_evidence or evidence_path in unsafe_evidence:
+                    continue
+                if recorded_evidence.get(evidence_path) != current_evidence.get(evidence_path):
+                    changed_evidence.append(evidence_path)
+        changed_evidence = list(dict.fromkeys(changed_evidence))
+        criterion_satisfied = (
+            not invalid
+            and not missing_evidence
+            and not unsafe_evidence
+            and not missing_verification
+            and not changed_evidence
+        )
         entry = {
             "id": criterion_id,
             "description": description,
@@ -3781,6 +3927,7 @@ def _evaluate_acceptance(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
             "missing_evidence": missing_evidence,
             "unsafe_evidence": unsafe_evidence,
             "missing_verification": missing_verification,
+            "changed_evidence": changed_evidence,
             "invalid": invalid,
             "satisfied": criterion_satisfied,
         }
@@ -3796,6 +3943,10 @@ def _evaluate_acceptance(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
                 reasons.append(f"{criterion_id or 'criterion'} missing verification: {missing_verification[:5]}")
             if invalid:
                 reasons.append(f"{criterion_id or 'criterion'} invalid: {invalid}")
+            if changed_evidence:
+                reasons.append(
+                    f"{criterion_id or 'criterion'} changed after verification: {changed_evidence[:5]}"
+                )
 
     all_satisfied = not unsatisfied
     reason = "All acceptance criteria satisfied." if all_satisfied else "; ".join(reasons[:20])
@@ -4565,7 +4716,7 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
     state = _load_state(root)
     scope_contract = _scope_contract_status(root, state, project_map)
     acceptance = _evaluate_acceptance(root, state)
-    acceptance_required = bool((state.get("acceptance_contract") or {}).get("criteria"))
+    acceptance_required = _acceptance_required(state)
     state_exists = state_path.exists()
     git = _git_status(root, max_lines=max_files)
 

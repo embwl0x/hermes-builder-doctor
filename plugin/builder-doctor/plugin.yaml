@@ -1,6 +1,6 @@
 name: builder-doctor
 kind: standalone
-version: 0.7.0
+version: 0.7.1
 description: >
   Default guardrail tools for substantial software builds. Agents should use
   these naturally for app/project creation, repair, refactors, and verification:

@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.7.0
+version: 0.7.1
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -179,7 +179,9 @@ After each fix, run only the relevant script again. Do not run the full suite un
 
 After the intended verifier commands pass, call `builder_acceptance` with
 `action: "read"`. Missing artifacts, unsafe paths, or verifier commands without
-a successful `builder_verify` record must be resolved before final receipt.
+a successful post-contract `builder_verify` record must be resolved before
+final receipt. The latest result for each exact command wins. If an evidence
+artifact changes after verification, rerun the verifier before receipt.
 
 Verification discipline:
 - Once `builder_verify` has been used for a project, continue verification through `builder_verify`; do not switch to the raw terminal for the same test/build/check command.
