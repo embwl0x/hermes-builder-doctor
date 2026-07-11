@@ -3,7 +3,7 @@
 This guide is for installing Builder Doctor into another Hermes agent, including
 agents backed by smaller local models.
 
-It describes the 0.8.2 workflow. Plugin and skill versions should match.
+It describes the 0.8.3 workflow. Plugin and skill versions should match.
 
 If you just want the shortest path, use `docs/QUICKSTART.md` first.
 

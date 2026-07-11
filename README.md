@@ -3,7 +3,7 @@
 Generic builder guardrails for Hermes agents running local or OpenAI-compatible
 models.
 
-Current release: **0.8.2**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+Current release: **0.8.3**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 Local coding models can be useful builders, but they tend to fail in predictable
 ways: too many files before the first test, repeated full-suite loops, weak
@@ -66,6 +66,10 @@ longer satisfy handoff readiness.
 In 0.8.2, a failed `builder_verify` persists a compact latest-failure record.
 After context compaction, `builder_failure_plan` can recover it from only the
 project path, and blocked repair edits return that exact recovery call.
+
+In 0.8.3, verifier timeouts terminate the verifier's whole process group before
+returning. This prevents test runners such as XCTest from surviving as orphaned
+processes, while safely preserving partial timeout output for diagnosis.
 
 ## Repository Layout
 

@@ -2,6 +2,15 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.3 — 2026-07-11
+
+- Run each verifier in its own process group and terminate the entire group on
+  timeout, preventing orphaned XCTest and other child processes from lingering.
+- Normalize partial timeout output that Python may return as bytes, avoiding a
+  secondary `TypeError` that hid the original verifier failure.
+- Add a regression that launches a child process, forces a timeout, and proves
+  the child is gone before `builder_verify` returns.
+
 ## 0.8.2 — 2026-07-11
 
 - Persist a compact latest failed-verifier record in project guard state.

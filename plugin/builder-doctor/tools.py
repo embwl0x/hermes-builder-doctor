@@ -7,6 +7,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import tomllib
 from datetime import datetime, timezone
@@ -1019,6 +1020,34 @@ def _git_status(root: Path, max_lines: int = 80) -> Dict[str, Any]:
         }
     except Exception as exc:
         return {"is_git_repo": True, "error": str(exc), "changed_files": []}
+
+
+def _output_text(value: Any) -> str:
+    """Normalize subprocess output, including bytes returned on timeouts."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
+def _stop_process_group(proc: subprocess.Popen[str]) -> tuple[str, str]:
+    """Stop a verifier and every child it spawned before returning."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    try:
+        stdout, stderr = proc.communicate(timeout=2)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = proc.communicate()
+
+    return _output_text(stdout), _output_text(stderr)
 
 
 def _state_path(root: Path) -> Path:
@@ -3470,50 +3499,59 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
         exit_code = None
         output_tail = ""
         try:
-            proc = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
                 shell=True,
                 cwd=str(root),
                 env=env,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=timeout_seconds,
+                start_new_session=True,
             )
-            exit_code = proc.returncode
-            combined = proc.stdout + "\n" + proc.stderr
-            lines = combined.splitlines()
-            tail_lines = lines[-50:] if len(lines) > 50 else lines
-            output_tail = "\n".join(tail_lines)
-            zero_tests_detected = exit_code == 0 and _zero_tests_detected(cmd, output_tail)
-            if exit_code != 0:
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout_seconds)
+            except subprocess.TimeoutExpired as exc:
+                timed_out = True
                 any_failure = True
+                stdout, stderr = _stop_process_group(proc)
+                if not stdout:
+                    stdout = _output_text(exc.stdout)
+                if not stderr:
+                    stderr = _output_text(exc.stderr)
+                combined = stdout + "\n" + stderr
+                lines = combined.splitlines()
+                tail_lines = lines[-50:] if len(lines) > 50 else lines
+                output_tail = "\n".join(tail_lines)
                 failure = {
                     "command": cmd,
-                    "exit_code": exit_code,
-                    "timed_out": False,
+                    "exit_code": None,
+                    "timed_out": True,
                     "output_tail": output_tail,
                 }
-                failure.update(_failure_guidance(cmd, output_tail))
+                failure.update(_failure_guidance(cmd, output_tail, timed_out=True))
                 failures.append(failure)
-            elif zero_tests_detected:
-                any_failure = True
-                failure = _zero_test_failure(cmd, output_tail)
-                failures.append(failure)
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            any_failure = True
-            combined = (exc.stdout or "") + "\n" + (exc.stderr or "")
-            lines = combined.splitlines()
-            tail_lines = lines[-50:] if len(lines) > 50 else lines
-            output_tail = "\n".join(tail_lines)
-            failure = {
-                "command": cmd,
-                "exit_code": None,
-                "timed_out": True,
-                "output_tail": output_tail,
-            }
-            failure.update(_failure_guidance(cmd, output_tail, timed_out=True))
-            failures.append(failure)
+            else:
+                exit_code = proc.returncode
+                combined = _output_text(stdout) + "\n" + _output_text(stderr)
+                lines = combined.splitlines()
+                tail_lines = lines[-50:] if len(lines) > 50 else lines
+                output_tail = "\n".join(tail_lines)
+                zero_tests_detected = exit_code == 0 and _zero_tests_detected(cmd, output_tail)
+                if exit_code != 0:
+                    any_failure = True
+                    failure = {
+                        "command": cmd,
+                        "exit_code": exit_code,
+                        "timed_out": False,
+                        "output_tail": output_tail,
+                    }
+                    failure.update(_failure_guidance(cmd, output_tail))
+                    failures.append(failure)
+                elif zero_tests_detected:
+                    any_failure = True
+                    failure = _zero_test_failure(cmd, output_tail)
+                    failures.append(failure)
         except Exception as exc:
             any_failure = True
             output_tail = str(exc)

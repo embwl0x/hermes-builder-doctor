@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -53,6 +55,34 @@ class BuilderDoctorToolTests(unittest.TestCase):
                 "objective": objective,
             }
         )
+
+    def test_builder_verify_timeout_stops_spawned_process_group(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pid_path = root / "child.pid"
+            result = json.loads(
+                self.tools.builder_verify(
+                    {
+                        "project_path": str(root),
+                        "commands": ["sleep 60 & echo $! > child.pid; wait"],
+                        "timeout_seconds": 5,
+                    }
+                )
+            )
+            child_pid = int(pid_path.read_text(encoding="utf-8").strip())
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"timed-out verifier left child process {child_pid} running")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["commands"][0]["timed_out"])
 
     def test_go_map_reports_mixed_package_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
