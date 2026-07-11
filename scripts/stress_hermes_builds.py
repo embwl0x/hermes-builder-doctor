@@ -827,6 +827,7 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
         "builder_budget",
         "builder_plan",
         "builder_resume",
+        "builder_acceptance",
         "builder_verify",
         "builder_receipt",
     }
@@ -874,6 +875,7 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
             "budget_before_first_verify": budget_before_first_verify,
             "receipt_used": tool_counts.get("builder_receipt", 0) > 0,
             "resume_used": tool_counts.get("builder_resume", 0) > 0,
+            "acceptance_used": tool_counts.get("builder_acceptance", 0) > 0,
             "verify_used": tool_counts.get("builder_verify", 0) > 0,
             "writes_or_patches": writes_or_patches,
             "writes_before_first_verify": writes_before_first_verify,

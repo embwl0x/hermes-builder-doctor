@@ -1051,6 +1051,10 @@ def _default_guard() -> Dict[str, Any]:
         "last_missing_tests_reason": "",
         "scope_phase_required": False,
         "last_scope_contract_reason": "",
+        "acceptance_required": False,
+        "acceptance_ready": True,
+        "last_acceptance_at": "",
+        "last_acceptance_reason": "",
     }
 
 
@@ -1088,6 +1092,7 @@ def _default_state(root: Path) -> Dict[str, Any]:
         "decisions": [],
         "files_touched": [],
         "verification": [],
+        "acceptance_contract": {"criteria": []},
         "notes": [],
         "guard": _default_guard(),
         "created_at": now,
@@ -3498,6 +3503,310 @@ def builder_verify(args: Dict[str, Any], **_: Any) -> str:
     })
 
 
+def _normalize_acceptance_criteria(
+    root: Path,
+    incoming: Any,
+) -> tuple[List[Dict[str, Any]], List[str]]:
+    """Validate and normalize acceptance criteria before they reach project state."""
+    if isinstance(incoming, dict):
+        incoming = incoming.get("criteria")
+    if not isinstance(incoming, list):
+        return [], ["'criteria' must be a list."]
+    if not incoming:
+        return [], ["At least one criterion is required; use action=clear to remove a contract."]
+
+    normalized: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    seen_ids: set[str] = set()
+    for index, item in enumerate(incoming):
+        label = f"criterion {index + 1}"
+        if not isinstance(item, dict):
+            errors.append(f"{label} must be an object.")
+            continue
+
+        criterion_id = str(item.get("id") or "").strip()
+        description = str(item.get("description") or "").strip()
+        evidence_paths = [
+            str(path).strip()
+            for path in _listify(item.get("evidence_paths"))
+            if str(path).strip()
+        ]
+        verification_commands = [
+            str(command).strip()
+            for command in _listify(item.get("verification_commands"))
+            if str(command).strip()
+        ]
+
+        if not criterion_id:
+            errors.append(f"{label} needs a non-empty id.")
+        elif not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", criterion_id):
+            errors.append(
+                f"{label} id '{criterion_id}' may contain only letters, numbers, dot, dash, and underscore."
+            )
+        elif criterion_id in seen_ids:
+            errors.append(f"Duplicate criterion id '{criterion_id}'.")
+        else:
+            seen_ids.add(criterion_id)
+        if not description:
+            errors.append(f"{label} needs a non-empty description.")
+        if not evidence_paths:
+            errors.append(f"{label} needs at least one evidence_path.")
+        if not verification_commands:
+            errors.append(f"{label} needs at least one verification_command.")
+
+        safe_paths: List[str] = []
+        for evidence_path in evidence_paths:
+            candidate = Path(evidence_path)
+            resolved = candidate.resolve() if candidate.is_absolute() else (root / candidate).resolve()
+            try:
+                relative = resolved.relative_to(root)
+            except ValueError:
+                errors.append(f"{label} evidence path escapes the project root: {evidence_path}")
+                continue
+            if not relative.parts or relative.parts[0] == ".hermes-builder":
+                errors.append(
+                    f"{label} evidence must be a project artifact outside .hermes-builder: {evidence_path}"
+                )
+                continue
+            normalized_path = str(relative)
+            if normalized_path not in safe_paths:
+                safe_paths.append(normalized_path)
+
+        normalized.append({
+            "id": criterion_id,
+            "description": description,
+            "evidence_paths": safe_paths,
+            "verification_commands": list(dict.fromkeys(verification_commands)),
+        })
+
+    return normalized, errors
+
+
+def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
+    project_path = args.get("project_path", "")
+    action = str(args.get("action", "read")).strip().lower() or "read"
+
+    root = Path(project_path).resolve()
+    if not root.is_dir():
+        return _json({
+            "success": False,
+            "project_path": project_path,
+            "summary": "Project path does not exist or is not a directory.",
+            "state": {},
+        })
+
+    state = _load_state(root)
+    if action not in {"read", "set", "replace", "update", "clear"}:
+        return _json({
+            "success": False,
+            "project_path": project_path,
+            "summary": "Unsupported action. Use read, replace, update, or clear.",
+            "state": state,
+        })
+
+    if action == "clear":
+        try:
+            state["acceptance_contract"] = {"criteria": []}
+            guard = _anchor_guard(root, _guard_from_state(state))
+            guard.update({
+                "acceptance_required": False,
+                "acceptance_ready": True,
+                "last_acceptance_at": _now_iso(),
+                "last_acceptance_reason": "No acceptance criteria recorded.",
+            })
+            state["guard"] = guard
+            _save_state(root, state)
+            return _json({
+                "success": True,
+                "project_path": project_path,
+                "state_path": str(_state_path(root)),
+                "summary": "Cleared acceptance contract.",
+                "criteria": [],
+                "satisfied": [],
+                "unsatisfied": [],
+                "all_satisfied": True,
+                "reason": "No acceptance criteria recorded.",
+                "state_recorded": True,
+            })
+        except Exception as exc:
+            return _json({
+                "success": False,
+                "project_path": project_path,
+                "summary": f"Failed to clear acceptance contract: {exc}",
+                "state": state,
+            })
+
+    if action in {"set", "replace", "update"}:
+        incoming = args.get("criteria")
+        if incoming is None:
+            incoming = args.get("contract")
+        if incoming is None:
+            return _json({
+                "success": False,
+                "project_path": project_path,
+                "summary": "Provide 'criteria' or 'contract' for replace/update.",
+                "state": state,
+            })
+        normalized, validation_errors = _normalize_acceptance_criteria(root, incoming)
+        if validation_errors:
+            return _json({
+                "success": False,
+                "project_path": project_path,
+                "summary": "Acceptance contract validation failed.",
+                "errors": validation_errors,
+                "state": state,
+            })
+        if action in {"set", "replace"}:
+            state["acceptance_contract"] = {"criteria": normalized}
+        else:
+            existing = state.get("acceptance_contract") or {}
+            existing_criteria = existing.get("criteria") or []
+            if not isinstance(existing_criteria, list):
+                existing_criteria = []
+            merged_by_id = {
+                str(item.get("id")): item
+                for item in existing_criteria
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            }
+            for item in normalized:
+                merged_by_id[item["id"]] = item
+            state["acceptance_contract"] = {"criteria": list(merged_by_id.values())}
+        try:
+            _save_state(root, state)
+        except Exception as exc:
+            return _json({
+                "success": False,
+                "project_path": project_path,
+                "summary": f"Failed to persist acceptance contract: {exc}",
+                "state": state,
+            })
+
+    criteria = (state.get("acceptance_contract") or {}).get("criteria") or []
+    evaluation = _evaluate_acceptance(root, state)
+    receipt_ready = evaluation["all_satisfied"]
+    guard = _anchor_guard(root, _guard_from_state(state))
+    guard["acceptance_required"] = bool(criteria)
+    guard["acceptance_ready"] = receipt_ready
+    guard["last_acceptance_at"] = _now_iso()
+    guard["last_acceptance_reason"] = evaluation["reason"]
+    state["guard"] = guard
+    try:
+        _save_state(root, state)
+    except Exception:
+        pass
+
+    return _json({
+        "success": True,
+        "project_path": project_path,
+        "state_path": str(_state_path(root)),
+        "action": action,
+        "criteria": criteria,
+        "satisfied": evaluation["satisfied"],
+        "unsatisfied": evaluation["unsatisfied"],
+        "all_satisfied": receipt_ready,
+        "reason": evaluation["reason"],
+        "state_recorded": True,
+    })
+
+
+def _evaluate_acceptance(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
+    contract = state.get("acceptance_contract") or {}
+    criteria = contract.get("criteria") or []
+    if not isinstance(criteria, list):
+        criteria = []
+    if not criteria:
+        return {
+            "satisfied": [],
+            "unsatisfied": [],
+            "all_satisfied": True,
+            "reason": "No acceptance criteria recorded.",
+        }
+
+    verification = state.get("verification") or []
+    successful_commands = {
+        str(item.get("command", "")).strip()
+        for item in verification
+        if isinstance(item, dict)
+        and item.get("exit_code") == 0
+        and not item.get("timed_out")
+        and not item.get("zero_tests_detected")
+        and str(item.get("command", "")).strip()
+    }
+
+    satisfied: List[Dict[str, Any]] = []
+    unsatisfied: List[Dict[str, Any]] = []
+    reasons: List[str] = []
+    for criterion in criteria:
+        if not isinstance(criterion, dict):
+            unsatisfied.append({"id": "", "satisfied": False, "invalid": ["Criterion is not an object."]})
+            reasons.append("Malformed acceptance criterion.")
+            continue
+        criterion_id = str(criterion.get("id") or "")
+        description = str(criterion.get("description") or "")
+        evidence_paths = [str(path) for path in _listify(criterion.get("evidence_paths")) if str(path).strip()]
+        verification_commands = [str(cmd) for cmd in _listify(criterion.get("verification_commands")) if str(cmd).strip()]
+
+        invalid: List[str] = []
+        if not criterion_id:
+            invalid.append("missing id")
+        if not description:
+            invalid.append("missing description")
+        if not evidence_paths:
+            invalid.append("no evidence paths")
+        if not verification_commands:
+            invalid.append("no verification commands")
+
+        missing_evidence: List[str] = []
+        unsafe_evidence: List[str] = []
+        for rel in evidence_paths:
+            candidate = (root / rel).resolve() if not Path(rel).is_absolute() else Path(rel).resolve()
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                unsafe_evidence.append(rel)
+                continue
+            if candidate == root or candidate == root / ".hermes-builder" or (root / ".hermes-builder") in candidate.parents:
+                unsafe_evidence.append(rel)
+                continue
+            if not candidate.exists():
+                missing_evidence.append(rel)
+
+        missing_verification = [cmd for cmd in verification_commands if cmd not in successful_commands]
+        criterion_satisfied = not invalid and not missing_evidence and not unsafe_evidence and not missing_verification
+        entry = {
+            "id": criterion_id,
+            "description": description,
+            "evidence_paths": evidence_paths,
+            "verification_commands": verification_commands,
+            "missing_evidence": missing_evidence,
+            "unsafe_evidence": unsafe_evidence,
+            "missing_verification": missing_verification,
+            "invalid": invalid,
+            "satisfied": criterion_satisfied,
+        }
+        if criterion_satisfied:
+            satisfied.append(entry)
+        else:
+            unsatisfied.append(entry)
+            if missing_evidence:
+                reasons.append(f"{criterion_id or 'criterion'} missing evidence: {missing_evidence[:5]}")
+            if unsafe_evidence:
+                reasons.append(f"{criterion_id or 'criterion'} unsafe evidence: {unsafe_evidence[:5]}")
+            if missing_verification:
+                reasons.append(f"{criterion_id or 'criterion'} missing verification: {missing_verification[:5]}")
+            if invalid:
+                reasons.append(f"{criterion_id or 'criterion'} invalid: {invalid}")
+
+    all_satisfied = not unsatisfied
+    reason = "All acceptance criteria satisfied." if all_satisfied else "; ".join(reasons[:20])
+    return {
+        "satisfied": satisfied,
+        "unsatisfied": unsatisfied,
+        "all_satisfied": all_satisfied,
+        "reason": reason,
+    }
+
+
 # ---------------------------------------------------------------------------
 # builder_budget
 # ---------------------------------------------------------------------------
@@ -3906,10 +4215,10 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
         {
             "id": "state-seed",
             "title": "Seed resumable state",
-            "goal": "Record the objective, first phase, important decisions, and immediate next steps.",
+            "goal": "Record the objective, acceptance proof, first phase, important decisions, and immediate next steps.",
             "max_file_batch": 0,
-            "tools": ["builder_resume"],
-            "done_when": "A project-local .hermes-builder/state.json exists with objective and next steps.",
+            "tools": ["builder_resume", "builder_acceptance"],
+            "done_when": "Project-local state contains the objective, next steps, and concrete acceptance criteria with evidence paths and verifier commands.",
         },
     ]
 
@@ -3992,10 +4301,10 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
         {
             "id": "receipt",
             "title": "Final receipt",
-            "goal": "Summarize files, decisions, verification, and remaining limitations before the final answer.",
+            "goal": "Evaluate acceptance, then summarize files, decisions, verification, and remaining limitations before the final answer.",
             "max_file_batch": 0,
-            "tools": ["builder_receipt"],
-            "done_when": "A compact receipt exists and includes proof commands or explains why they were unavailable.",
+            "tools": ["builder_acceptance", "builder_receipt"],
+            "done_when": "Every recorded acceptance criterion is satisfied and the compact receipt includes its artifacts and passing verifier commands.",
         },
     ])
 
@@ -4061,6 +4370,7 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
             "Forbidden in this first slice: " + "; ".join(language_policy["forbidden"]),
             "Hard stop after 4 file writes/patches in one phase: run builder_verify before expanding scope.",
             "Call builder_budget after each source/test batch and after successful verification; if it reports over_budget, stop adding scope and receipt/defer.",
+            "Before source edits, call builder_acceptance action=replace with non-empty criteria; each criterion needs project evidence paths and exact builder_verify commands.",
             "After builder_budget reports within budget, the next source/test batch is still capped at two files or three write_file/patch calls before builder_verify.",
             "For super-complex objectives, build a verified kernel first and record deferred layers instead of attempting the full system in one turn.",
             "Before writing source, choose stable language identity and keep it consistent: Node module style, Swift target names, Python import root, Rust crate/module names, and one Go package name per directory.",
@@ -4254,6 +4564,8 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
     state_path = _state_path(root)
     state = _load_state(root)
     scope_contract = _scope_contract_status(root, state, project_map)
+    acceptance = _evaluate_acceptance(root, state)
+    acceptance_required = bool((state.get("acceptance_contract") or {}).get("criteria"))
     state_exists = state_path.exists()
     git = _git_status(root, max_lines=max_files)
 
@@ -4298,6 +4610,11 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
             f"{scope_contract.get('reason')} Missing anchors include "
             f"{scope_contract.get('missing_terms', [])[:12]}."
         )
+    if acceptance_required and not acceptance.get("all_satisfied"):
+        blocking_warnings.append(
+            "Recorded acceptance contract is not satisfied: "
+            f"{acceptance.get('reason', 'missing acceptance proof')}"
+        )
     if guard.get("last_verify_success") is True and not guard.get("last_budget_after_verify"):
         warnings.append("Passing verification is recorded, but builder_budget(after_verify=true) has not been recorded before receipt.")
     if project_map["scripts"] and not any(name in project_map["scripts"] for name in ("test", "build", "lint", "typecheck", "check")):
@@ -4327,6 +4644,10 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
         "files_touched": touched,
         "verification": verification[:max_files],
         "scope_contract": scope_contract,
+        "acceptance_contract": {
+            "required": acceptance_required,
+            **acceptance,
+        },
         "available_scripts": project_map["scripts"],
         "git": git,
         "warnings": blocking_warnings + warnings,
@@ -4337,6 +4658,10 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
     state_warning = ""
     try:
         guard = _anchor_guard(root, _guard_from_state(state))
+        guard["acceptance_required"] = acceptance_required
+        guard["acceptance_ready"] = bool(acceptance.get("all_satisfied"))
+        guard["last_acceptance_at"] = _now_iso()
+        guard["last_acceptance_reason"] = str(acceptance.get("reason", ""))[:1000]
         if ready_to_report:
             guard["receipt_required"] = False
             guard["verify_required"] = False

@@ -666,6 +666,165 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIn("zero executed tests", " ".join(receipt["receipt"]["warnings"]))
         self.assertTrue(state["guard"]["last_receipt_blocked_reason"])
 
+    def test_acceptance_rejects_vacuous_and_duplicate_criteria(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vacuous = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [{"id": "ui", "description": "Build the UI"}],
+                    }
+                )
+            )
+            duplicate = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "ui",
+                                "description": "Build the UI",
+                                "evidence_paths": ["ui.py"],
+                                "verification_commands": ["python3 -m unittest discover -s ."],
+                            },
+                            {
+                                "id": "ui",
+                                "description": "Duplicate UI proof",
+                                "evidence_paths": ["test_ui.py"],
+                                "verification_commands": ["python3 -m unittest discover -s ."],
+                            },
+                        ],
+                    }
+                )
+            )
+
+        self.assertFalse(vacuous["success"])
+        self.assertTrue(any("evidence_path" in item for item in vacuous["errors"]))
+        self.assertTrue(any("verification_command" in item for item in vacuous["errors"]))
+        self.assertFalse(duplicate["success"])
+        self.assertTrue(any("Duplicate criterion id" in item for item in duplicate["errors"]))
+
+    def test_acceptance_rejects_evidence_outside_project_and_internal_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            outside = Path(tmp) / "outside.py"
+            outside.write_text("print('outside')\n", encoding="utf-8")
+            result = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "escape",
+                                "description": "Do not accept external or internal state as proof",
+                                "evidence_paths": [str(outside), ".hermes-builder/state.json"],
+                                "verification_commands": ["python3 -m unittest discover -s ."],
+                            }
+                        ],
+                    }
+                )
+            )
+
+        self.assertFalse(result["success"])
+        self.assertTrue(any("escapes the project root" in item for item in result["errors"]))
+        self.assertTrue(any("outside .hermes-builder" in item for item in result["errors"]))
+
+    def test_acceptance_requires_artifacts_and_recorded_builder_verify_command(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            saved = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "behavior",
+                                "description": "Core behavior exists and its focused test passes",
+                                "evidence_paths": ["feature.py", "test_feature.py"],
+                                "verification_commands": [command],
+                            }
+                        ],
+                    }
+                )
+            )
+            (root / "feature.py").write_text("def value():\n    return 7\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\nfrom feature import value\n\n"
+                "class FeatureTests(unittest.TestCase):\n"
+                "    def test_value(self):\n        self.assertEqual(value(), 7)\n",
+                encoding="utf-8",
+            )
+            artifacts_only = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+            verify = json.loads(
+                self.tools.builder_verify(
+                    {"project_path": str(root), "commands": [command]}
+                )
+            )
+            satisfied = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(saved["success"])
+        self.assertFalse(saved["all_satisfied"])
+        self.assertFalse(artifacts_only["all_satisfied"])
+        self.assertEqual(artifacts_only["unsatisfied"][0]["missing_verification"], [command])
+        self.assertTrue(verify["success"])
+        self.assertTrue(satisfied["all_satisfied"])
+        self.assertEqual(len(satisfied["satisfied"]), 1)
+
+    def test_unsatisfied_acceptance_blocks_receipt_until_proven(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_placeholder(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Deliver the acceptance feature")
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "artifact",
+                            "description": "The requested feature artifact exists and tests pass",
+                            "evidence_paths": ["feature.py", "test_feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            blocked = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+
+            (root / "feature.py").write_text("ENABLED = True\n", encoding="utf-8")
+            ready = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+
+        self.assertTrue(verify["success"])
+        self.assertFalse(blocked["ready_to_report"])
+        self.assertTrue(
+            any("acceptance contract" in item.lower() for item in blocked["blocking_warnings"])
+        )
+        self.assertTrue(ready["receipt"]["acceptance_contract"]["all_satisfied"])
+        self.assertFalse(
+            any("acceptance contract" in item.lower() for item in ready["blocking_warnings"])
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

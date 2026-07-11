@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from .tools import (
+    builder_acceptance,
     builder_budget,
     builder_doctor,
     builder_failure_plan,
@@ -215,6 +216,58 @@ def register(ctx) -> None:
         emoji="💾",
     )
     ctx.register_tool(
+        name="builder_acceptance",
+        toolset="builder-doctor",
+        schema={
+            "name": "builder_acceptance",
+            "description": "Record and evaluate a concrete acceptance contract for substantial builds. Call action=replace before source edits with criteria that each name project artifact paths and exact builder_verify commands. Read it before receipt; unsatisfied criteria block final handoff.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "project_path": {
+                        "type": "string",
+                        "description": "Absolute path to the project root.",
+                    },
+                    "action": {
+                        "type": "string",
+                        "enum": ["read", "replace", "update", "clear"],
+                        "description": "Replace the full contract, update criteria by id, read/evaluate, or clear it.",
+                        "default": "read",
+                    },
+                    "criteria": {
+                        "type": "array",
+                        "description": "Required for replace/update. Each criterion needs a unique id, description, project evidence paths, and exact builder_verify commands.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": {"type": "string"},
+                                "description": {"type": "string"},
+                                "evidence_paths": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                                "verification_commands": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                },
+                            },
+                            "required": [
+                                "id",
+                                "description",
+                                "evidence_paths",
+                                "verification_commands",
+                            ],
+                        },
+                    },
+                },
+                "required": ["project_path"],
+            },
+        },
+        handler=builder_acceptance,
+        description="Persist measurable acceptance criteria and block receipts until their evidence is proven.",
+        emoji="🎯",
+    )
+    ctx.register_tool(
         name="builder_verify",
         toolset="builder-doctor",
         schema={
@@ -293,7 +346,7 @@ def register(ctx) -> None:
         toolset="builder-doctor",
         schema={
             "name": "builder_receipt",
-            "description": "Use before the final answer for software build work. Produce a project receipt from builder state, git status, scripts, files touched, verification records, and warnings.",
+            "description": "Use before the final answer for software build work. Produce a project receipt from builder state, acceptance evidence, git status, scripts, files touched, verification records, and warnings. An unsatisfied acceptance contract blocks final handoff.",
             "parameters": {
                 "type": "object",
                 "properties": {

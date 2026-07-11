@@ -21,6 +21,8 @@ Hermes configuration, API keys, session logs, or machine-specific paths.
 - `builder_verify`: bounded build/test runner with compact diagnostics.
 - `builder_failure_plan`: focused language repair plan after a failed verifier.
 - `builder_resume`: project-local checkpoint state in `.hermes-builder/state.json`.
+- `builder_acceptance`: measurable artifact-and-verifier contract that prevents a
+  thin passing test from being mistaken for completion of the requested scope.
 - `builder_receipt`: final handoff summary with files, checks, and warnings.
 - Hermes hooks that enforce staging inside Builder Doctor-marked projects:
   three write/patch calls trigger a verification gate before more edits can run,
@@ -149,6 +151,10 @@ and only deletes generated projects after Hermes reports a terminal run status.
 - `builder_failure_plan` turns verifier failures into one-file repair guidance
   before the next patch; after a failed verifier, write/patch calls are blocked
   until a failure plan is recorded.
+- `builder_acceptance` rejects empty/vacuous criteria, duplicate IDs, evidence
+  outside the project root, and evidence from Builder Doctor's own state. A
+  recorded contract blocks `builder_receipt` until every artifact exists and
+  every exact verifier command has a successful `builder_verify` record.
 - For Rust projects, compile-only verification such as `cargo check` is paired
   with `cargo test` so a completed stage cannot receipt without the test gate.
 - Targeted Rust repair commands such as `cargo test test_name` are treated as

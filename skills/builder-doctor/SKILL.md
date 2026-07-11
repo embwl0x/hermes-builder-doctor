@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.6.0
+version: 0.7.0
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -95,6 +95,13 @@ Follow the returned phase gates:
 - update resume state after each phase
 - avoid unrelated rewrites
 
+Before source edits, call `builder_acceptance` with `action: "replace"` and a
+small set of criteria derived from the user's request. Every criterion needs a
+unique ID, a concrete description, one or more project artifact paths, and the
+exact commands that will later pass through `builder_verify`. Do not use
+`.hermes-builder` state as evidence. Use `action: "update"` to replace criteria
+by ID when the implementation plan changes.
+
 Hard gate for large builds:
 - After three `write_file`/`patch` calls in a phase, the hook will block more edits until you verify.
 - Once `.hermes-builder/state.json` exists, Builder Doctor blocks source edits
@@ -170,6 +177,10 @@ Call `builder_verify` with the smallest command that exercises the changed code:
 
 After each fix, run only the relevant script again. Do not run the full suite unless the change touches shared config.
 
+After the intended verifier commands pass, call `builder_acceptance` with
+`action: "read"`. Missing artifacts, unsafe paths, or verifier commands without
+a successful `builder_verify` record must be resolved before final receipt.
+
 Verification discipline:
 - Once `builder_verify` has been used for a project, continue verification through `builder_verify`; do not switch to the raw terminal for the same test/build/check command.
 - Use raw terminal only for bounded setup/introspection that `builder_verify` is not meant to do, such as creating the initial project folder, listing files, or reading command availability.
@@ -241,6 +252,7 @@ Call `builder_receipt` before final response. Use it to report:
 - completed phases
 - verification commands/results
 - known limitations or next steps
+- acceptance criteria and their artifact/verifier proof
 
 If `builder_receipt` warns that no verification exists, run `builder_verify` or explicitly state why verification is unavailable.
 If `builder_receipt` returns `ready_to_report: false`, do not treat the stage as complete. Address `blocking_warnings` first. If tests are missing, add the focused test phase and rerun `builder_verify`; if objective scope is under-covered, add one small source/test batch for the listed missing anchors and rerun `builder_verify`; if a verifier failed, run `builder_failure_plan`, patch one cause, rerun `builder_verify`, and then call `builder_budget` with `after_verify: true`.
@@ -358,6 +370,22 @@ Returns JSON:
 - `failures` (array with the same fields)
 - `summary` (string)
 
+### builder_acceptance
+
+Inputs:
+- `project_path` (string, required)
+- `action` (string, optional; one of `read`, `replace`, `update`, `clear`)
+- `criteria` (array, required for replace/update; each item requires unique
+  `id`, non-empty `description`, `evidence_paths`, and
+  `verification_commands`)
+
+Returns JSON:
+- `success` (bool)
+- `criteria`, `satisfied`, and `unsatisfied` (arrays)
+- `all_satisfied` (bool)
+- `reason` (string)
+- `state_recorded` (bool)
+
 ### builder_failure_plan
 
 Inputs:
@@ -410,6 +438,7 @@ Returns JSON:
 - Do not try to satisfy every requested feature in a single response when the task is explicitly complex; build a verified kernel and document next layers.
 - Do not use `swift run` as verification for GUI/game apps; prefer `swift build` and `swift test`.
 - Do not skip `builder_resume` during a long build.
+- Do not skip `builder_acceptance` or use empty criteria to make a large build look complete.
 - Do not skip `builder_receipt` before final response.
 - Do not patch from a failed verifier without first calling `builder_failure_plan`.
 - Do not edit project source files through `builder_map`, `builder_doctor`, `builder_plan`, or `builder_receipt`; Builder Doctor tools may write only their project-local `.hermes-builder/state.json`.

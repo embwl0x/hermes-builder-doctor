@@ -73,3 +73,10 @@ builder_resume and builder_receipt.
   `cargo test test_name` are diagnostic only; finish with full `cargo test`
   before `builder_receipt`.
 - Go: use one package name per directory and verify with `go test ./...`.
+# Acceptance before breadth
+
+For a substantial build, record a `builder_acceptance` contract before source
+edits. Keep it small and concrete: each criterion names the project artifacts
+that must exist and the exact `builder_verify` commands that prove them. Read
+the contract again before `builder_receipt`; an unsatisfied contract means the
+current layer is not complete even if a smaller test happened to pass.
