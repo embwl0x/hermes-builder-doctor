@@ -3,6 +3,8 @@
 Generic builder guardrails for Hermes agents running local or OpenAI-compatible
 models.
 
+Current release: **0.8.0**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+
 Local coding models can be useful builders, but they tend to fail in predictable
 ways: too many files before the first test, repeated full-suite loops, weak
 resume state after compaction, and language-specific setup mistakes. Builder
@@ -39,6 +41,24 @@ Supported lanes:
 - Rust, Cargo.
 - Go modules, including mixed-package directory detection.
 
+## Default Build Flow
+
+For a substantial build, the intended sequence is:
+
+1. `builder_map` and `builder_plan` establish project facts and the objective.
+2. `builder_doctor` identifies setup risks.
+3. `builder_resume` saves the objective and current phase.
+4. `builder_acceptance` records concrete artifact paths and exact verifier commands.
+5. The model writes a small source/test batch, then calls `builder_budget`.
+6. `builder_verify` runs the bounded proof command; failures go through
+   `builder_failure_plan` before repair.
+7. After a pass, `builder_budget(after_verify=true)` and `builder_receipt` close
+   the stage.
+
+If unchanged work is verified or receipted again, 0.8.0 returns
+`already_verified` / `already_complete` instead of rerunning the proof. The
+model should follow `next_required` and answer the user rather than cycling.
+
 ## Repository Layout
 
 ```text
@@ -47,6 +67,7 @@ skills/builder-doctor/      Skill instructions for agent behavior
 examples/                   Optional generic config and soul snippets
 docs/                       Installation and operating notes
 tests/                      Standard-library smoke tests
+CHANGELOG.md                Release and upgrade notes
 ```
 
 ## Quick Install
@@ -99,12 +120,14 @@ Start here if you are installing for the first time:
 ## Test
 
 ```bash
-python3 -m unittest discover -s tests
-python3 -m py_compile plugin/builder-doctor/tools.py plugin/builder-doctor/__init__.py
+uv run --no-project python -m unittest discover -s tests
+uv run --no-project python -m py_compile plugin/builder-doctor/tools.py plugin/builder-doctor/__init__.py
+uv run --no-project --with pytest pytest -q tests/test_stress_harness.py
 ./scripts/install.sh --force --dry-run
 ```
 
-The tests avoid external Python dependencies.
+The core suite uses the standard library. The stress-harness tests use an
+ephemeral `pytest` environment through `uv`; they do not add project dependencies.
 
 ## Stress A Hermes Agent
 
@@ -136,6 +159,10 @@ every Builder Doctor tool explicitly.
 The JSON report includes staging signals such as budget use, writes before the
 first verifier, receipt use, raw terminal verifier leaks, and completion churn
 (verifier/acceptance/receipt calls made after the first receipt).
+
+Start with `--prompt-mode probe`. A healthy run independently passes its language
+verifier, has no raw terminal verifier leak, uses acceptance and receipt, and
+keeps `completion_churn.excess_completion_calls` close to zero.
 
 The stress harness starts Hermes `/v1/runs`, streams tool events, independently
 verifies the generated projects, asks for one repair pass by default, writes a

@@ -5,6 +5,9 @@ Builder Doctor has two parts:
 1. A Hermes plugin at `plugin/builder-doctor`.
 2. A Hermes skill card at `skills/builder-doctor`.
 
+The current plugin and skill version is 0.8.0. Upgrades replace both parts
+together so tool schemas and agent guidance stay in sync.
+
 ## Ask A Hermes Agent To Install It
 
 You can point a Hermes agent at this public repo and ask it to install Builder
@@ -72,9 +75,20 @@ builder_doctor
 builder_budget
 builder_plan
 builder_resume
+builder_acceptance
 builder_verify
 builder_failure_plan
 builder_receipt
+```
+
+`builder_acceptance` is required for the 0.7+ workflow. If it is missing, the
+gateway is still running an older plugin or was not restarted after install.
+
+Confirm the installed version and files:
+
+```bash
+./scripts/verify-install.sh
+grep '^version:' "$HOME/.hermes/plugins/builder-doctor/plugin.yaml"
 ```
 
 ## Optional Guidance Snippets
@@ -84,3 +98,13 @@ snippets that tell an agent when to reach for Builder Doctor naturally.
 
 Use them as reference material when editing your own Hermes config or soul file.
 Do not overwrite a working production config with the example snippets.
+
+## Upgrade Notes
+
+- 0.7.0 added persisted acceptance contracts.
+- 0.7.1 made proof ordering and evidence fingerprints authoritative.
+- 0.8.0 added compact receipts and unchanged-completion caching.
+
+After any upgrade, restart Hermes. Existing project state remains readable, but
+an old acceptance contract may require one fresh `builder_verify` run before it
+can satisfy the stricter proof rules. See `../CHANGELOG.md` for details.
