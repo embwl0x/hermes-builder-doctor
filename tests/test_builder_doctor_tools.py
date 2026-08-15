@@ -177,6 +177,48 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIsNone(state["guard"]["last_verify_success"])
         self.assertEqual(state["verification"][0]["source"], "builder_resume")
 
+    def test_builder_resume_replace_preserves_acceptance_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            accepted = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "feature",
+                                "description": "Feature exists and passes its test",
+                                "evidence_paths": ["feature.py"],
+                                "verification_commands": ["python3 -m unittest"],
+                            }
+                        ],
+                    }
+                )
+            )
+            resumed = json.loads(
+                self.tools.builder_resume(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "objective": "Build the feature",
+                        "status": "active",
+                    }
+                )
+            )
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(accepted["success"])
+        self.assertTrue(resumed["success"])
+        self.assertEqual(state["objective"], "Build the feature")
+        self.assertEqual(
+            [item["id"] for item in state["acceptance_contract"]["criteria"]],
+            ["feature"],
+        )
+        self.assertTrue(state["guard"]["acceptance_required"])
+
     def test_builder_map_marks_project_and_write_gate_blocks_fourth_edit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
