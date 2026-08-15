@@ -3,7 +3,7 @@
 Generic builder guardrails for Hermes agents running local or OpenAI-compatible
 models.
 
-Current release: **0.8.8**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+Current release: **0.8.9**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 Local coding models can be useful builders, but they tend to fail in predictable
 ways: too many files before the first test, repeated full-suite loops, weak

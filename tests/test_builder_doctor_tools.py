@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 
@@ -218,6 +219,47 @@ class BuilderDoctorToolTests(unittest.TestCase):
             ["feature"],
         )
         self.assertTrue(state["guard"]["acceptance_required"])
+
+    def test_parallel_acceptance_and_resume_writes_remain_atomic_and_merged(self) -> None:
+        for _ in range(50):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+                acceptance_args = {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "Feature exists and passes its test",
+                            "evidence_paths": ["feature.py"],
+                            "verification_commands": ["python3 -m unittest"],
+                        }
+                    ],
+                }
+                resume_args = {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "objective": "Build the feature",
+                    "status": "active",
+                }
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    futures = [
+                        executor.submit(self.tools.builder_acceptance, acceptance_args),
+                        executor.submit(self.tools.builder_resume, resume_args),
+                    ]
+                    for future in futures:
+                        self.assertTrue(json.loads(future.result())["success"])
+
+                state = json.loads(
+                    (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+                )
+                self.assertEqual(state["objective"], "Build the feature")
+                self.assertEqual(
+                    [item["id"] for item in state["acceptance_contract"]["criteria"]],
+                    ["feature"],
+                )
+                self.assertTrue(state["guard"]["acceptance_required"])
 
     def test_builder_map_marks_project_and_write_gate_blocks_fourth_edit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
