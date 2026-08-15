@@ -4931,7 +4931,27 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
             })
 
     existed = path.exists()
-    state = _default_state(root) if action == "replace" else _load_state(root)
+    state = _load_state(root)
+
+    if action == "replace":
+        # ``builder_resume`` owns checkpoint fields, not the acceptance
+        # contract or its guard evidence. Models commonly seed acceptance and
+        # resume state in the same parallel tool turn. Replacing the entire
+        # document here used to let the resume write silently erase a contract
+        # that builder_acceptance had just persisted.
+        defaults = _default_state(root)
+        for field in (
+            "objective",
+            "status",
+            "current_phase",
+            "completed",
+            "next_steps",
+            "decisions",
+            "files_touched",
+            "verification",
+            "notes",
+        ):
+            state[field] = defaults[field]
 
     if action in {"update", "replace"}:
         scalar_fields = {

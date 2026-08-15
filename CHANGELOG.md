@@ -2,6 +2,14 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.8 — 2026-08-15
+
+- Preserve acceptance contracts and their guard state when `builder_resume`
+  uses `action=replace`, preventing parallel acceptance/checkpoint calls from
+  silently erasing the build contract.
+- Add regression coverage for the acceptance-then-resume replacement sequence
+  observed in autonomous Hermes builds.
+
 ## 0.8.7 — 2026-08-15
 
 - Make `builder_verify` the sole authority for verification proof and receipt
