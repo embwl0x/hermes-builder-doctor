@@ -3,7 +3,7 @@
 Generic builder guardrails for Hermes agents running local or OpenAI-compatible
 models.
 
-Current release: **0.8.6**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+Current release: **0.8.7**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 Local coding models can be useful builders, but they tend to fail in predictable
 ways: too many files before the first test, repeated full-suite loops, weak
@@ -82,6 +82,10 @@ unverified exports remain blocked.
 In 0.8.6, project-root anchoring also inspects terminal working-directory
 changes and directly executed script paths. A mapped build cannot silently
 switch into another repository and run that repository's installer.
+
+In 0.8.7, only `builder_verify` can establish verification proof. Manual
+checkpoint summaries remain visible history but cannot unlock a receipt or
+shadow a trusted passing verifier record.
 
 ## Repository Layout
 
@@ -207,7 +211,8 @@ and only deletes generated projects after Hermes reports a terminal run status.
   outside the project root, and evidence from Builder Doctor's own state. A
   recorded contract blocks `builder_receipt` until every artifact exists and
   every exact verifier command has a successful post-contract `builder_verify`
-  record. The latest result wins, and evidence changes invalidate old proof.
+  record. The latest trusted `builder_verify` result wins, and evidence changes
+  invalidate old proof; checkpoint summaries cannot replace verifier evidence.
 - Successful unchanged verifier and receipt calls are cached as compact no-ops,
   with an explicit instruction to stop tool cycling and answer the user.
 - For Rust projects, compile-only verification such as `cargo check` is paired

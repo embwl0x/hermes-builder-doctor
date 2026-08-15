@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.8.6
+version: 0.8.7
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -208,7 +208,7 @@ Verification discipline:
 - If `builder_verify` fails twice on the same command, call `builder_doctor` as a broader scan, then return to `builder_failure_plan` before the next patch.
 - If a repair needs more than two patches before verification, stop patching and rerun `builder_verify` or produce `builder_receipt` with the remaining failure.
 - If a terminal tool guardrail fires during verification, do not repeat the terminal command. Switch back to `builder_verify`, checkpoint with `builder_resume`, or finish with `builder_receipt`.
-- Let `builder_verify` record successful verification automatically; use `builder_resume` for objective, phase, decisions, deferred layers, and any manual verification notes.
+- Let `builder_verify` record successful verification automatically; use `builder_resume` for objective, phase, decisions, deferred layers, and manual verification notes only. Resume notes are deliberately non-authoritative: they cannot establish, replace, or invalidate `builder_verify` proof.
 - If the build has gone more than one tool cycle without visible verification after several writes, shrink scope immediately instead of continuing broad file creation.
 - Swift stages may use up to six tracked write/patch calls per checkpoint so
   mutually dependent model, implementation, integration, and test files can be

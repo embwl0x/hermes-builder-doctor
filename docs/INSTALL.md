@@ -5,7 +5,7 @@ Builder Doctor has two parts:
 1. A Hermes plugin at `plugin/builder-doctor`.
 2. A Hermes skill card at `skills/builder-doctor`.
 
-The current plugin and skill version is 0.8.6. Upgrades replace both parts
+The current plugin and skill version is 0.8.7. Upgrades replace both parts
 together so tool schemas and agent guidance stay in sync.
 
 ## Ask A Hermes Agent To Install It

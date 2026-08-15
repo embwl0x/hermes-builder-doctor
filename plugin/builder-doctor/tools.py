@@ -3511,6 +3511,11 @@ def _cached_verification_records(
     for item in verification[baseline:]:
         if not isinstance(item, dict):
             continue
+        # Only builder_verify may establish reusable proof. Checkpoint notes can
+        # contain command/result-shaped dictionaries, but they are not verifier
+        # records and must never shadow the latest trusted result.
+        if item.get("source") != "builder_verify" or "exit_code" not in item:
+            continue
         command = str(item.get("command") or "").strip()
         if command:
             latest[command] = item
@@ -4173,6 +4178,12 @@ def _evaluate_acceptance(root: Path, state: Dict[str, Any]) -> Dict[str, Any]:
     latest_by_command: Dict[str, Dict[str, Any]] = {}
     for item in verification[verification_baseline:]:
         if not isinstance(item, dict):
+            continue
+        # Resume/receipt summaries are useful history, not acceptance proof.
+        # Ignore them before selecting the latest record so an agent cannot
+        # accidentally mask a passing builder_verify checkpoint with a later
+        # human-style summary for the same command.
+        if item.get("source") != "builder_verify" or "exit_code" not in item:
             continue
         command = str(item.get("command", "")).strip()
         if command:
@@ -4921,7 +4932,6 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
 
     existed = path.exists()
     state = _default_state(root) if action == "replace" else _load_state(root)
-    verification_incoming: List[Any] = []
 
     if action in {"update", "replace"}:
         scalar_fields = {
@@ -4948,11 +4958,21 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
                 continue
             incoming = _listify(args.get(arg_key))
             if state_key == "verification":
-                incoming = [
-                    item if isinstance(item, dict) else {"note": _clip(item, 2000), "recorded_at": _now_iso()}
-                    for item in incoming
-                ]
-                verification_incoming = incoming
+                normalized_verification: List[Dict[str, Any]] = []
+                for item in incoming:
+                    if isinstance(item, dict):
+                        note = dict(item)
+                        note.pop("acceptance_evidence", None)
+                        note["source"] = "builder_resume"
+                        note["recorded_at"] = _now_iso()
+                    else:
+                        note = {
+                            "source": "builder_resume",
+                            "note": _clip(item, 2000),
+                            "recorded_at": _now_iso(),
+                        }
+                    normalized_verification.append(note)
+                incoming = normalized_verification
             else:
                 incoming = [_clip(item, 1200) for item in incoming]
             state[state_key] = _append_unique(list(state.get(state_key, [])), incoming, max_items=max_items)
@@ -4961,22 +4981,8 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
         guard["language_profile"] = _detect_language_profile(root)
         guard["objective_required"] = not bool(str(state.get("objective") or "").strip())
         guard["last_receipt_ready"] = False
-        if verification_incoming:
-            status = _verification_status(verification_incoming)
-            guard["builder_verify_used"] = True
-            guard["last_verify_success"] = status
-            guard["last_verify_at"] = _now_iso()
-            guard["writes_since_budget"] = 0
-            guard["writes_since_verify"] = 0
-            guard["verify_required"] = False
-            if status is True:
-                guard["receipt_required"] = True
-                guard["repair_patches_remaining"] = None
-                guard["failure_plan_required"] = False
-            elif status is False:
-                guard["receipt_required"] = False
-                guard["repair_patches_remaining"] = 2
-                guard["failure_plan_required"] = True
+        # Manual verification notes are deliberately non-authoritative. Only
+        # builder_verify may change verifier guard state or unlock a receipt.
         state["guard"] = guard
 
         state["project_path"] = str(root)
@@ -5000,12 +5006,16 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
     next_required: List[str] = []
     guard = _anchor_guard(root, _guard_from_state(state))
     if action in {"update", "replace"} and "verification" in args:
-        next_required.extend([
-            "If the recorded verification passed, do not write or patch more files in this turn.",
-            "Call builder_budget with after_verify=true.",
-            "Then call builder_receipt and record deferred layers instead of expanding the build.",
-            "If the recorded verification failed, patch at most two concrete failures before rerunning builder_verify.",
-        ])
+        if guard.get("last_verify_success") is True:
+            next_required.extend([
+                "The manual verification summary was saved as a note; the trusted passing builder_verify checkpoint remains authoritative.",
+                "Call builder_budget with after_verify=true, then builder_receipt before adding more scope.",
+            ])
+        else:
+            next_required.extend([
+                "Manual verification summaries are checkpoint notes, not proof.",
+                "Run builder_verify before builder_budget or builder_receipt.",
+            ])
     elif guard.get("receipt_required"):
         next_required.extend([
             "A passing verification is already recorded for this stage.",
@@ -5096,7 +5106,16 @@ def builder_receipt(args: Dict[str, Any], **_: Any) -> str:
 
     warnings: List[str] = []
     blocking_warnings: List[str] = []
-    latest_verification = next((item for item in reversed(verification) if isinstance(item, dict)), None)
+    latest_verification = next(
+        (
+            item
+            for item in reversed(state.get("verification", []))
+            if isinstance(item, dict)
+            and item.get("source") == "builder_verify"
+            and "exit_code" in item
+        ),
+        None,
+    )
     latest_verification_status = _verification_status([latest_verification]) if latest_verification else None
     zero_test_records = [
         item for item in verification

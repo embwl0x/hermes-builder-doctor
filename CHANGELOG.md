@@ -2,6 +2,20 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.7 — 2026-08-15
+
+- Make `builder_verify` the sole authority for verification proof and receipt
+  guard state; `builder_resume` verification entries are now explicitly stored
+  as non-authoritative checkpoint notes.
+- Prevent later human-style verification summaries from shadowing trusted,
+  passing verifier records during acceptance evaluation or duplicate-verifier
+  caching.
+- Select the latest trusted verifier record when building receipts, so verbose
+  or confused local models cannot trap a green build in receipt churn.
+- Add a regression reproducing the Qwen3.8 Hermes build failure: valid passing
+  proof followed by a spoofed/incomplete checkpoint summary for the same
+  command must still complete acceptance and receipt end to end.
+
 ## 0.8.6 — 2026-07-11
 
 - Inspect terminal `cd` destinations and directly executed relative or absolute

@@ -155,7 +155,7 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIn("source-dir-budget-exceeded", codes)
         self.assertTrue(any("stop adding" in action.lower() for action in result["actions"]))
 
-    def test_builder_resume_nudges_receipt_after_verification(self) -> None:
+    def test_builder_resume_treats_manual_verification_as_notes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = json.loads(
@@ -167,11 +167,15 @@ class BuilderDoctorToolTests(unittest.TestCase):
                     }
                 )
             )
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
 
         self.assertTrue(result["success"])
-        self.assertTrue(any("builder_budget" in item for item in result["next_required"]))
-        self.assertTrue(any("builder_receipt" in item for item in result["next_required"]))
-        self.assertTrue(any("do not write" in item.lower() for item in result["next_required"]))
+        self.assertTrue(any("builder_verify" in item for item in result["next_required"]))
+        self.assertFalse(state["guard"]["builder_verify_used"])
+        self.assertIsNone(state["guard"]["last_verify_success"])
+        self.assertEqual(state["verification"][0]["source"], "builder_resume")
 
     def test_builder_map_marks_project_and_write_gate_blocks_fourth_edit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1412,6 +1416,66 @@ class BuilderDoctorToolTests(unittest.TestCase):
 
         self.assertFalse(evaluated["all_satisfied"])
         self.assertEqual(evaluated["unsatisfied"][0]["missing_verification"], [command])
+
+    def test_manual_summary_cannot_mask_trusted_passing_verification(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertEqual(1, 1)\n",
+                encoding="utf-8",
+            )
+            self.record_objective(root, "Deliver verified feature")
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "Feature exists and its tests pass",
+                            "evidence_paths": ["feature.py", "test_feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            verified = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            self.tools.builder_resume(
+                {
+                    "project_path": str(root),
+                    "action": "update",
+                    "verification": [
+                        {
+                            "source": "builder_verify",
+                            "command": command,
+                            "success": True,
+                            "result": "Executed 1 test, with 0 failures",
+                        }
+                    ],
+                }
+            )
+            acceptance = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+            duplicate_verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(verified["success"])
+        self.assertTrue(acceptance["all_satisfied"])
+        self.assertTrue(duplicate_verify["already_verified"])
+        self.assertTrue(receipt["ready_to_report"])
+        self.assertEqual(state["verification"][-1]["source"], "builder_resume")
 
     def test_corrupted_duplicate_ids_cannot_satisfy_acceptance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -197,6 +197,7 @@ def register(ctx) -> None:
                     },
                     "verification": {
                         "type": "array",
+                        "description": "Optional human-readable checkpoint summaries only. These are stored as non-authoritative builder_resume notes; only builder_verify can establish verification proof or unlock a receipt.",
                         "items": {"type": "object"},
                     },
                     "notes": {
