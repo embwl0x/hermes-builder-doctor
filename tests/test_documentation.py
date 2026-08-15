@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-VERSION = "0.8.8"
+VERSION = "0.8.9"
 TOOLS = {
     "builder_map",
     "builder_doctor",

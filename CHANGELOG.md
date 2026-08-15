@@ -2,6 +2,15 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.9 — 2026-08-15
+
+- Serialize project state persistence with a per-project file lock and use a
+  unique fsynced temporary file for atomic replacement.
+- Merge acceptance, objective, checkpoint lists, verification history, and
+  guard requirements when parallel tools save from stale snapshots.
+- Add a 50-iteration parallel acceptance/resume regression that checks both
+  valid JSON and preservation of each tool's owned state.
+
 ## 0.8.8 — 2026-08-15
 
 - Preserve acceptance contracts and their guard state when `builder_resume`

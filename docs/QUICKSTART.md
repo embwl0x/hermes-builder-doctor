@@ -3,7 +3,7 @@
 This is the shortest path to install Builder Doctor into a Hermes agent and run
 one small verification.
 
-This guide targets Builder Doctor 0.8.8 or newer.
+This guide targets Builder Doctor 0.8.9 or newer.
 
 ## What You Need
 

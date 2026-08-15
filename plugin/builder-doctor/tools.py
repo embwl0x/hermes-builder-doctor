@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import re
 import shlex
 import signal
 import subprocess
+import tempfile
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -172,11 +174,25 @@ def _read_text(path: Path) -> Optional[str]:
 
 def _write_json(path: Path, obj: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as f:
-        json.dump(obj, f, ensure_ascii=True, indent=2)
-        f.write("\n")
-    tmp.replace(path)
+    tmp_path: Optional[Path] = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as f:
+            tmp_path = Path(f.name)
+            json.dump(obj, f, ensure_ascii=True, indent=2)
+            f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path is not None and tmp_path.exists():
+            tmp_path.unlink()
 
 
 def _rel(path: Path, root: Path) -> str:
@@ -1148,10 +1164,74 @@ def _anchor_guard(root: Path, guard: Dict[str, Any]) -> Dict[str, Any]:
     return guard
 
 
-def _save_state(root: Path, state: Dict[str, Any]) -> None:
-    state["project_path"] = str(root)
-    state["updated_at"] = _now_iso()
-    _write_json(_state_path(root), state)
+def _save_state(
+    root: Path,
+    state: Dict[str, Any],
+    *,
+    preserve_concurrent_acceptance: bool = True,
+) -> None:
+    path = _state_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            current = _read_json(path)
+            merged = dict(state)
+            if isinstance(current, dict):
+                current_contract = current.get("acceptance_contract")
+                incoming_contract = merged.get("acceptance_contract")
+                current_criteria = (
+                    current_contract.get("criteria")
+                    if isinstance(current_contract, dict)
+                    else None
+                )
+                incoming_criteria = (
+                    incoming_contract.get("criteria")
+                    if isinstance(incoming_contract, dict)
+                    else None
+                )
+                if (
+                    preserve_concurrent_acceptance
+                    and current_criteria
+                    and not incoming_criteria
+                ):
+                    merged["acceptance_contract"] = current_contract
+
+                if current.get("objective") and not merged.get("objective"):
+                    merged["objective"] = current["objective"]
+                if current.get("created_at"):
+                    merged["created_at"] = current["created_at"]
+
+                for field in (
+                    "completed",
+                    "next_steps",
+                    "decisions",
+                    "files_touched",
+                    "verification",
+                    "notes",
+                ):
+                    current_items = current.get(field)
+                    incoming_items = merged.get(field)
+                    if isinstance(current_items, list) and isinstance(incoming_items, list):
+                        merged[field] = _append_unique(
+                            current_items,
+                            incoming_items,
+                            max_items=max(200, len(current_items) + len(incoming_items)),
+                        )
+
+            guard = _anchor_guard(root, _guard_from_state(merged))
+            guard["acceptance_required"] = _acceptance_required(merged)
+            if guard["acceptance_required"] and not guard.get("acceptance_ready"):
+                guard["last_receipt_ready"] = False
+            merged["guard"] = guard
+            merged["project_path"] = str(root)
+            merged["updated_at"] = _now_iso()
+            _write_json(path, merged)
+            state.clear()
+            state.update(merged)
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _default_state(root: Path) -> Dict[str, Any]:
@@ -3999,7 +4079,7 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
                 "last_receipt_ready": False,
             })
             state["guard"] = guard
-            _save_state(root, state)
+            _save_state(root, state, preserve_concurrent_acceptance=False)
             return _json({
                 "success": True,
                 "project_path": project_path,
@@ -5008,7 +5088,7 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
         state["project_path"] = str(root)
         state["updated_at"] = _now_iso()
         try:
-            _write_json(path, state)
+            _save_state(root, state)
         except Exception as exc:
             return _json({
                 "success": False,
