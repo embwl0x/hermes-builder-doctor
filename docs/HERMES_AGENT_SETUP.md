@@ -3,6 +3,8 @@
 This guide is for installing Builder Doctor into another Hermes agent, including
 agents backed by smaller local models.
 
+It describes the 0.8.7 workflow. Plugin and skill versions should match.
+
 If you just want the shortest path, use `docs/QUICKSTART.md` first.
 
 ## Ask The Agent To Do It
@@ -92,6 +94,7 @@ builder_doctor
 builder_budget
 builder_plan
 builder_resume
+builder_acceptance
 builder_verify
 builder_failure_plan
 builder_receipt
@@ -99,8 +102,9 @@ builder_receipt
 
 Builder Doctor also registers `pre_tool_call` and `post_tool_call` hooks. The
 hooks stay inactive until a project has a `.hermes-builder/state.json` marker,
-which `builder_map`, `builder_budget`, `builder_verify`, `builder_resume`, and
-`builder_receipt` create or update.
+which Builder Doctor tools create or update. The marker contains workflow state,
+not source code or model transcripts. Once mapped, terminal commands that change
+into or directly execute a path outside that project are blocked.
 
 If the toolset is not visible, run:
 
@@ -138,13 +142,16 @@ Use this prompt shape when testing smaller local coding models:
 ```text
 Use Builder Doctor for this build. First create or identify the project root,
 then run builder_map and builder_plan. Build only a staged verified kernel:
-manifest/config, one or two core modules, and one focused test file. Use
+save the concrete objective with builder_resume, then record builder_acceptance
+criteria with project artifact paths and the smallest exact verifier command.
+Create manifest/config, one or two core modules, and one focused test file. Use
 builder_budget after source/test batches and builder_verify for checks. After
-the first successful verification, stop adding features, call builder_resume
-with deferred layers, run builder_budget with after_verify set, then call
-builder_receipt. If a test command reports zero tests, add one focused test and
-rerun builder_verify before calling the layer complete. If builder_verify fails,
-call builder_failure_plan before patching.
+the first successful verification, stop adding features, run builder_budget
+with after_verify set, then call builder_receipt once. If a test command reports
+zero tests, add one focused test and rerun builder_verify before calling the
+layer complete. If builder_verify fails, call builder_failure_plan before
+patching. If any tool returns already_verified or already_complete, follow
+next_required and stop the tool loop.
 ```
 
 This keeps the model out of long one-shot project generation and gives it a
@@ -164,11 +171,12 @@ Expected behavior:
 
 1. The agent maps and plans before broad edits.
 2. It writes only a small first slice.
-3. It checks phase size through `builder_budget`.
-4. It verifies through `builder_verify`.
-5. It calls `builder_failure_plan` before any repair patch if verification fails.
-6. It follows hook blocks instead of forcing extra writes or raw terminal test loops.
-7. It finishes with `builder_receipt`.
+3. It records measurable acceptance criteria before source edits.
+4. It checks phase size through `builder_budget`.
+5. It verifies through `builder_verify`.
+6. It calls `builder_failure_plan` before any repair patch if verification fails.
+7. It follows hook blocks instead of forcing extra writes or raw terminal test loops.
+8. It finishes with one successful `builder_receipt` and stops on the completion signal.
 
 ## Automated Stress Test
 
@@ -202,3 +210,8 @@ independent verification commands, optionally asks for one repair pass, writes a
 JSON report, and deletes generated projects by default. On timeout or
 interruption it stops active Hermes runs and skips deletion unless Hermes reports
 a terminal run status. Use `--keep-projects` when debugging a failure.
+
+For a new model, begin with `--prompt-mode probe`. Review independent verifier
+status, missing tools, raw terminal verifier leaks, and
+`event_summary.completion_churn`. The churn count distinguishes a model that
+finishes cleanly from one that repeatedly seeks reassurance after receipt.

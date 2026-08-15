@@ -9,10 +9,13 @@ agent:
     with `terminal mkdir -p` first, never `write_file` on the project root
     path, then builder_map and builder_plan before source/test edits,
     builder_doctor for a quick diagnostic scan,
-    builder_budget after source/test batches, builder_resume at phase
-    boundaries, builder_verify for bounded checks, and builder_receipt before
-    final handoff. Build super-complex requests as staged verified kernels
-    instead of one large burst.
+    builder_resume to save the objective, builder_acceptance before source edits
+    with project artifact paths and exact verifier commands, builder_budget after
+    source/test batches, builder_verify for bounded checks, and one
+    builder_receipt before final handoff. Build super-complex requests as staged
+    verified kernels instead of one large burst. Stop the tool loop when
+    ready_to_report, already_verified, or already_complete says the current
+    evidence is complete.
 
 platform_hints:
   api_server:
@@ -24,4 +27,5 @@ platform_hints:
       map, plan, and run a quick diagnostic scan before writing source batches.
       Use builder_budget before widening scope and
       builder_verify for build/test/check commands rather than repeated ad hoc
-      terminal loops.
+      terminal loops. Record builder_acceptance criteria before source edits and
+      stop calling builder tools after a successful unchanged receipt.

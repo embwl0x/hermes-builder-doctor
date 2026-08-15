@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
+import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS_PATH = ROOT / "plugin" / "builder-doctor" / "tools.py"
+PLUGIN_INIT_PATH = ROOT / "plugin" / "builder-doctor" / "__init__.py"
 
 
 def load_tools_module():
@@ -17,6 +21,24 @@ def load_tools_module():
         raise RuntimeError(f"Unable to load tools module at {TOOLS_PATH}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def load_plugin_module():
+    name = "builder_doctor_plugin_under_test"
+    spec = importlib.util.spec_from_file_location(
+        name,
+        PLUGIN_INIT_PATH,
+        submodule_search_locations=[str(PLUGIN_INIT_PATH.parent)],
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load plugin module at {PLUGIN_INIT_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(name, None)
     return module
 
 
@@ -33,6 +55,39 @@ class BuilderDoctorToolTests(unittest.TestCase):
                 "objective": objective,
             }
         )
+
+    def test_builder_verify_timeout_stops_detached_descendant(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            pid_path = root / "child.pid"
+            command = (
+                "python3 -c \"import pathlib,subprocess,time; "
+                "p=subprocess.Popen(['sleep','60'],start_new_session=True); "
+                "pathlib.Path('child.pid').write_text(str(p.pid)); time.sleep(60)\""
+            )
+            result = json.loads(
+                self.tools.builder_verify(
+                    {
+                        "project_path": str(root),
+                        "commands": [command],
+                        "timeout_seconds": 5,
+                    }
+                )
+            )
+            child_pid = int(pid_path.read_text(encoding="utf-8").strip())
+
+            deadline = time.monotonic() + 2
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(child_pid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"timed-out verifier left child process {child_pid} running")
+
+        self.assertFalse(result["success"])
+        self.assertTrue(result["commands"][0]["timed_out"])
 
     def test_go_map_reports_mixed_package_dirs(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,7 +155,7 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIn("source-dir-budget-exceeded", codes)
         self.assertTrue(any("stop adding" in action.lower() for action in result["actions"]))
 
-    def test_builder_resume_nudges_receipt_after_verification(self) -> None:
+    def test_builder_resume_treats_manual_verification_as_notes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             result = json.loads(
@@ -112,11 +167,15 @@ class BuilderDoctorToolTests(unittest.TestCase):
                     }
                 )
             )
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
 
         self.assertTrue(result["success"])
-        self.assertTrue(any("builder_budget" in item for item in result["next_required"]))
-        self.assertTrue(any("builder_receipt" in item for item in result["next_required"]))
-        self.assertTrue(any("do not write" in item.lower() for item in result["next_required"]))
+        self.assertTrue(any("builder_verify" in item for item in result["next_required"]))
+        self.assertFalse(state["guard"]["builder_verify_used"])
+        self.assertIsNone(state["guard"]["last_verify_success"])
+        self.assertEqual(state["verification"][0]["source"], "builder_resume")
 
     def test_builder_map_marks_project_and_write_gate_blocks_fourth_edit(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -140,6 +199,92 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIsNotNone(block)
         self.assertEqual(block["action"], "block")
         self.assertIn("write budget", block["message"])
+
+    def test_swift_write_gate_allows_coherent_six_edit_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Package.swift").write_text(
+                "// swift-tools-version: 6.0\nimport PackageDescription\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Build a Swift runtime parser with focused tests.")
+
+            for index in range(6):
+                allowed = self.tools.builder_pre_tool_call(
+                    tool_name="write_file",
+                    args={"path": str(root / f"File{index}.swift")},
+                )
+                self.assertIsNone(allowed)
+
+            blocked = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "File6.swift")},
+            )
+
+        self.assertIsNotNone(blocked)
+        self.assertIn("write budget", blocked["message"])
+
+    def test_new_acceptance_contract_reopens_verified_stage_for_edits(self) -> None:
+        command = "python3 -m compileall -q ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "main.py").write_text("print('ok')\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Build and prove a parser feature.")
+            self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+
+            locked = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "before_contract.py")},
+            )
+            acceptance = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "parser",
+                                "description": "Parser source and tests exist and pass.",
+                                "evidence_paths": ["parser.py", "test_parser.py"],
+                                "verification_commands": [command],
+                            }
+                        ],
+                    }
+                )
+            )
+            reopened = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "parser.py")},
+            )
+            state = json.loads((root / ".hermes-builder" / "state.json").read_text(encoding="utf-8"))
+
+        self.assertIsNotNone(locked)
+        self.assertFalse(acceptance["all_satisfied"])
+        self.assertIsNone(reopened)
+        self.assertIsNone(state["guard"]["last_verify_success"])
+        self.assertFalse(state["guard"]["receipt_required"])
+        self.assertTrue(state["guard"]["scope_phase_required"])
+
+    def test_swift_placeholder_only_test_is_not_handoff_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Package.swift").write_text(
+                "// swift-tools-version: 6.0\nimport PackageDescription\n",
+                encoding="utf-8",
+            )
+            tests = root / "Tests" / "CoreTests"
+            tests.mkdir(parents=True)
+            (tests / "CoreTests.swift").write_text(
+                "import XCTest\nfinal class CoreTests: XCTestCase {\n"
+                "  func testPlaceholder() { XCTAssertTrue(true) }\n}\n",
+                encoding="utf-8",
+            )
+            reasons = self.tools._missing_required_tests(root)
+
+        self.assertTrue(any("trivial placeholder" in reason for reason in reasons))
 
     def test_source_edit_requires_saved_objective_after_state_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -335,11 +480,39 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertFalse(verify["success"])
         self.assertIsNotNone(blocked_before_plan)
         self.assertIn("builder_failure_plan", blocked_before_plan["message"])
+        self.assertIn(str(root), blocked_before_plan["message"])
+        self.assertIn("automatically loads", blocked_before_plan["message"])
         self.assertTrue(plan["success"])
         self.assertIsNone(first)
         self.assertIsNone(second)
         self.assertIsNotNone(third)
         self.assertIn("smallest relevant command", third["message"])
+
+    def test_failure_plan_loads_latest_failed_verify_from_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root)
+            verify = json.loads(
+                self.tools.builder_verify(
+                    {
+                        "project_path": str(root),
+                        "commands": ["python3 -c 'raise RuntimeError(\"stored failure\")'"],
+                    }
+                )
+            )
+            plan = json.loads(
+                self.tools.builder_failure_plan({"project_path": str(root)})
+            )
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertFalse(verify["success"])
+        self.assertTrue(plan["success"])
+        self.assertIn("python3 -c", plan["command"])
+        self.assertIn("stored failure", json.dumps(plan))
+        self.assertFalse(state["guard"]["failure_plan_required"])
 
     def test_verify_blocks_dependency_mutation_commands(self) -> None:
         blocked = [
@@ -637,6 +810,104 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertEqual(block["action"], "block")
         self.assertIn("terminal file mutation", block["message"])
 
+    def test_terminal_cd_then_script_outside_mapped_project_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            outside = Path(tmp) / "NativeAgent"
+            root.mkdir()
+            (outside / "script").mkdir(parents=True)
+            self.tools.builder_map({"project_path": str(root)})
+
+            block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "project_path": str(root),
+                    "command": f"cd {outside} && ./script/install_app.sh",
+                },
+            )
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["action"], "block")
+        self.assertIn("outside the mapped project root", block["message"])
+
+    def test_terminal_absolute_script_outside_mapped_project_is_blocked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            outside_script = Path(tmp) / "NativeAgent" / "script" / "install_app.sh"
+            root.mkdir()
+            outside_script.parent.mkdir(parents=True)
+            outside_script.write_text("#!/bin/sh\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+
+            block = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "project_path": str(root),
+                    "command": str(outside_script),
+                },
+            )
+
+        self.assertIsNotNone(block)
+        self.assertEqual(block["action"], "block")
+        self.assertIn("outside the mapped project root", block["message"])
+
+    def test_terminal_cd_then_script_inside_mapped_project_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            script = root / "script" / "build_app.sh"
+            script.parent.mkdir(parents=True)
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "project_path": str(root),
+                    "command": f"cd {root} && ./script/build_app.sh",
+                },
+            )
+
+        self.assertIsNone(allowed)
+
+    def test_terminal_absolute_system_executable_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            self.tools.builder_map({"project_path": str(root)})
+
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "project_path": str(root),
+                    "command": "/usr/bin/true",
+                },
+            )
+
+        self.assertIsNone(allowed)
+
+    def test_verified_build_artifact_can_be_exported_to_applications(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            artifact = root / ".build" / "release" / "SampleApp"
+            artifact.parent.mkdir(parents=True)
+            artifact.write_text("binary", encoding="utf-8")
+            self.tools.builder_map({"project_path": str(root)})
+            self.tools.builder_verify(
+                {"project_path": str(root), "commands": ["true"]}
+            )
+
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="terminal",
+                args={
+                    "command": (
+                        f"cp -f {artifact} /Applications/SampleApp.app/Contents/MacOS/SampleApp "
+                        "&& echo replaced"
+                    ),
+                },
+            )
+
+        self.assertIsNone(allowed)
+
     def test_receipt_not_ready_after_zero_test_verification(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -665,6 +936,700 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertTrue(receipt["blocking_warnings"])
         self.assertIn("zero executed tests", " ".join(receipt["receipt"]["warnings"]))
         self.assertTrue(state["guard"]["last_receipt_blocked_reason"])
+
+    def test_acceptance_rejects_vacuous_and_duplicate_criteria(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            vacuous = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [{"id": "ui", "description": "Build the UI"}],
+                    }
+                )
+            )
+            duplicate = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "ui",
+                                "description": "Build the UI",
+                                "evidence_paths": ["ui.py"],
+                                "verification_commands": ["python3 -m unittest discover -s ."],
+                            },
+                            {
+                                "id": "ui",
+                                "description": "Duplicate UI proof",
+                                "evidence_paths": ["test_ui.py"],
+                                "verification_commands": ["python3 -m unittest discover -s ."],
+                            },
+                        ],
+                    }
+                )
+            )
+
+        self.assertFalse(vacuous["success"])
+        self.assertTrue(any("evidence_path" in item for item in vacuous["errors"]))
+        self.assertTrue(any("verification_command" in item for item in vacuous["errors"]))
+        self.assertFalse(duplicate["success"])
+        self.assertTrue(any("Duplicate criterion id" in item for item in duplicate["errors"]))
+
+    def test_acceptance_rejects_evidence_outside_project_and_internal_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "project"
+            root.mkdir()
+            outside = Path(tmp) / "outside.py"
+            outside.write_text("print('outside')\n", encoding="utf-8")
+            result = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "escape",
+                                "description": "Do not accept external or internal state as proof",
+                                "evidence_paths": [str(outside), ".hermes-builder/state.json"],
+                                "verification_commands": ["python3 -m unittest discover -s ."],
+                            }
+                        ],
+                    }
+                )
+            )
+
+        self.assertFalse(result["success"])
+        self.assertTrue(any("escapes the project root" in item for item in result["errors"]))
+        self.assertTrue(any("outside .hermes-builder" in item for item in result["errors"]))
+
+    def test_acceptance_requires_artifacts_and_recorded_builder_verify_command(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            saved = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "behavior",
+                                "description": "Core behavior exists and its focused test passes",
+                                "evidence_paths": ["feature.py", "test_feature.py"],
+                                "verification_commands": [command],
+                            }
+                        ],
+                    }
+                )
+            )
+            (root / "feature.py").write_text("def value():\n    return 7\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\nfrom feature import value\n\n"
+                "class FeatureTests(unittest.TestCase):\n"
+                "    def test_value(self):\n        self.assertEqual(value(), 7)\n",
+                encoding="utf-8",
+            )
+            artifacts_only = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+            verify = json.loads(
+                self.tools.builder_verify(
+                    {"project_path": str(root), "commands": [command]}
+                )
+            )
+            satisfied = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(saved["success"])
+        self.assertFalse(saved["all_satisfied"])
+        self.assertFalse(artifacts_only["all_satisfied"])
+        self.assertEqual(artifacts_only["unsatisfied"][0]["missing_verification"], [command])
+        self.assertTrue(verify["success"])
+        self.assertTrue(satisfied["all_satisfied"])
+        self.assertEqual(len(satisfied["satisfied"]), 1)
+
+    def test_unsatisfied_acceptance_blocks_receipt_until_proven(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_placeholder(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Deliver the acceptance feature")
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "artifact",
+                            "description": "The requested feature artifact exists and tests pass",
+                            "evidence_paths": ["feature.py", "test_feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            blocked = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+
+            (root / "feature.py").write_text("ENABLED = True\n", encoding="utf-8")
+            reproved = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            ready = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+
+        self.assertTrue(verify["success"])
+        self.assertFalse(blocked["ready_to_report"])
+        self.assertTrue(
+            any("acceptance contract" in item.lower() for item in blocked["blocking_warnings"])
+        )
+        self.assertTrue(reproved["success"])
+        self.assertTrue(ready["receipt"]["acceptance_contract"]["all_satisfied"])
+        self.assertFalse(
+            any("acceptance contract" in item.lower() for item in ready["blocking_warnings"])
+        )
+
+    def test_acceptance_requires_verification_after_contract_is_recorded(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            before = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            saved = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "feature",
+                                "description": "Feature exists and passes after the contract is set",
+                                "evidence_paths": ["feature.py", "test_feature.py"],
+                                "verification_commands": [command],
+                            }
+                        ],
+                    }
+                )
+            )
+            after = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            proven = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(before["success"])
+        self.assertFalse(saved["all_satisfied"])
+        self.assertEqual(saved["unsatisfied"][0]["missing_verification"], [command])
+        self.assertTrue(after["success"])
+        self.assertTrue(proven["all_satisfied"])
+
+    def test_acceptance_uses_latest_result_for_each_verifier(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            test_path = root / "test_feature.py"
+            test_path.write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "Latest feature test result must pass",
+                            "evidence_paths": ["feature.py", "test_feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            first = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            test_path.write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.fail('regressed')\n",
+                encoding="utf-8",
+            )
+            second = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            evaluated = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(first["success"])
+        self.assertFalse(second["success"])
+        self.assertFalse(evaluated["all_satisfied"])
+        self.assertEqual(evaluated["unsatisfied"][0]["missing_verification"], [command])
+
+    def test_acceptance_rejects_symlink_escape_created_after_save(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            root = base / "project"
+            root.mkdir()
+            outside = base / "outside.py"
+            outside.write_text("SECRET = True\n", encoding="utf-8")
+            saved = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "artifact",
+                                "description": "Artifact must remain within the project",
+                                "evidence_paths": ["artifact.py"],
+                                "verification_commands": [command],
+                            }
+                        ],
+                    }
+                )
+            )
+            (root / "artifact.py").symlink_to(outside)
+            evaluated = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(saved["success"])
+        self.assertFalse(evaluated["all_satisfied"])
+        self.assertEqual(evaluated["unsatisfied"][0]["unsafe_evidence"], ["artifact.py"])
+
+    def test_malformed_persisted_acceptance_contract_blocks_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tools.builder_map({"project_path": str(root)})
+            state_path = root / ".hermes-builder" / "state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+            state["acceptance_contract"] = {"criteria": "corrupt"}
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+
+            evaluated = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+
+        self.assertFalse(evaluated["all_satisfied"])
+        self.assertIn("malformed", evaluated["reason"].lower())
+        self.assertTrue(
+            any("acceptance contract" in item.lower() for item in receipt["blocking_warnings"])
+        )
+
+    def test_acceptance_update_replaces_by_id_and_invalidates_old_proof(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name in ("api.py", "ui.py", "test_product.py"):
+                (root / name).write_text("VALUE = True\n", encoding="utf-8")
+            criteria = [
+                {
+                    "id": "api",
+                    "description": "API exists",
+                    "evidence_paths": ["api.py", "test_product.py"],
+                    "verification_commands": [command],
+                },
+                {
+                    "id": "ui",
+                    "description": "UI exists",
+                    "evidence_paths": ["ui.py", "test_product.py"],
+                    "verification_commands": [command],
+                },
+            ]
+            self.tools.builder_acceptance(
+                {"project_path": str(root), "action": "replace", "criteria": criteria}
+            )
+            self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            before = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+            updated = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "update",
+                        "criteria": [
+                            {
+                                "id": "api",
+                                "description": "API exists with its public contract",
+                                "evidence_paths": ["api.py", "test_product.py"],
+                                "verification_commands": [command],
+                            }
+                        ],
+                    }
+                )
+            )
+            reverified = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            reproven = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(before["all_satisfied"])
+        self.assertEqual([item["id"] for item in updated["criteria"]], ["api", "ui"])
+        self.assertEqual(updated["criteria"][0]["description"], "API exists with its public contract")
+        self.assertFalse(updated["all_satisfied"])
+        self.assertTrue(reverified["success"])
+        self.assertTrue(reproven["all_satisfied"])
+
+    def test_plugin_registers_acceptance_schema_and_handler(self) -> None:
+        plugin = load_plugin_module()
+
+        class FakeContext:
+            def __init__(self):
+                self.tools = {}
+
+            def register_hook(self, *_args, **_kwargs):
+                return None
+
+            def register_tool(self, **kwargs):
+                self.tools[kwargs["name"]] = kwargs
+
+        context = FakeContext()
+        plugin.register(context)
+
+        registration = context.tools["builder_acceptance"]
+        schema = registration["schema"]["parameters"]
+        criterion_schema = schema["properties"]["criteria"]["items"]
+        self.assertIs(registration["handler"], plugin.builder_acceptance)
+        self.assertEqual(
+            set(criterion_schema["required"]),
+            {"id", "description", "evidence_paths", "verification_commands"},
+        )
+        self.assertEqual(
+            schema["properties"]["action"]["enum"],
+            ["read", "replace", "update", "clear"],
+        )
+
+    def test_acceptance_invalidates_proof_when_evidence_changes(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            feature = root / "feature.py"
+            feature.write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "The verified feature must not change afterward",
+                            "evidence_paths": ["feature.py", "test_feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            first_verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            before_change = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+            feature.write_text("VALUE = 2\n", encoding="utf-8")
+            after_change = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+            second_verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            reproven = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(first_verify["success"])
+        self.assertTrue(before_change["all_satisfied"])
+        self.assertFalse(after_change["all_satisfied"])
+        self.assertEqual(after_change["unsatisfied"][0]["changed_evidence"], ["feature.py"])
+        self.assertTrue(second_verify["success"])
+        self.assertTrue(reproven["all_satisfied"])
+
+    def test_acceptance_ignores_untrusted_manual_verification_record(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "Only builder_verify may establish proof",
+                            "evidence_paths": ["feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            self.tools.builder_resume(
+                {
+                    "project_path": str(root),
+                    "action": "update",
+                    "verification": [
+                        {
+                            "command": command,
+                            "exit_code": 0,
+                            "timed_out": False,
+                            "zero_tests_detected": False,
+                            "success": True,
+                        }
+                    ],
+                }
+            )
+            evaluated = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertFalse(evaluated["all_satisfied"])
+        self.assertEqual(evaluated["unsatisfied"][0]["missing_verification"], [command])
+
+    def test_manual_summary_cannot_mask_trusted_passing_verification(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertEqual(1, 1)\n",
+                encoding="utf-8",
+            )
+            self.record_objective(root, "Deliver verified feature")
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "Feature exists and its tests pass",
+                            "evidence_paths": ["feature.py", "test_feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            verified = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            self.tools.builder_resume(
+                {
+                    "project_path": str(root),
+                    "action": "update",
+                    "verification": [
+                        {
+                            "source": "builder_verify",
+                            "command": command,
+                            "success": True,
+                            "result": "Executed 1 test, with 0 failures",
+                        }
+                    ],
+                }
+            )
+            acceptance = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+            duplicate_verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(verified["success"])
+        self.assertTrue(acceptance["all_satisfied"])
+        self.assertTrue(duplicate_verify["already_verified"])
+        self.assertTrue(receipt["ready_to_report"])
+        self.assertEqual(state["verification"][-1]["source"], "builder_resume")
+
+    def test_corrupted_duplicate_ids_cannot_satisfy_acceptance(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            state = self.tools._default_state(root)
+            criterion = {
+                "id": "feature",
+                "description": "Unique feature criterion",
+                "evidence_paths": ["feature.py"],
+                "verification_commands": ["python3 -m unittest discover -s ."],
+            }
+            state["acceptance_contract"] = {
+                "criteria": [criterion, dict(criterion)],
+                "verification_baseline": 0,
+            }
+            self.tools._save_state(root, state)
+
+            evaluated = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertFalse(evaluated["all_satisfied"])
+        duplicate = next(
+            item for item in evaluated["unsatisfied"] if "duplicate id" in item["invalid"]
+        )
+        self.assertIn("duplicate id", duplicate["invalid"])
+
+    def test_clear_acceptance_resets_guard_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "Feature proof",
+                            "evidence_paths": ["feature.py"],
+                            "verification_commands": ["python3 -m unittest discover -s ."],
+                        }
+                    ],
+                }
+            )
+            cleared = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "clear"})
+            )
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(cleared["all_satisfied"])
+        self.assertFalse(state["guard"]["acceptance_required"])
+        self.assertTrue(state["guard"]["acceptance_ready"])
+        self.assertEqual(state["acceptance_contract"]["criteria"], [])
+
+    def test_duplicate_verify_and_receipt_become_compact_completion_noops(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Deliver feature proof")
+            self.tools.builder_acceptance(
+                {
+                    "project_path": str(root),
+                    "action": "replace",
+                    "criteria": [
+                        {
+                            "id": "feature",
+                            "description": "Feature exists and passes its test",
+                            "evidence_paths": ["feature.py", "test_feature.py"],
+                            "verification_commands": [command],
+                        }
+                    ],
+                }
+            )
+            first_verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            verification_count = len(
+                json.loads(
+                    (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+                )["verification"]
+            )
+            duplicate_verify = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            verification_count_after = len(
+                json.loads(
+                    (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+                )["verification"]
+            )
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+            duplicate_receipt = json.loads(
+                self.tools.builder_receipt({"project_path": str(root)})
+            )
+            verify_after_receipt = json.loads(
+                self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            )
+            acceptance_after_receipt = json.loads(
+                self.tools.builder_acceptance({"project_path": str(root), "action": "read"})
+            )
+
+        self.assertTrue(first_verify["success"])
+        self.assertTrue(duplicate_verify["already_verified"])
+        self.assertEqual(verification_count_after, verification_count)
+        self.assertTrue(receipt["ready_to_report"])
+        self.assertNotIn("node", receipt["receipt"])
+        self.assertNotIn("python", receipt["receipt"])
+        self.assertEqual(
+            receipt["next_required"],
+            ["Stage complete. Stop calling builder tools and send the final answer now."],
+        )
+        self.assertTrue(duplicate_receipt["already_complete"])
+        self.assertLess(len(json.dumps(duplicate_receipt)), 2500)
+        self.assertTrue(verify_after_receipt["already_complete"])
+        self.assertTrue(acceptance_after_receipt["already_complete"])
+
+    def test_new_write_reservation_invalidates_completed_receipt(self) -> None:
+        command = "python3 -m unittest discover -s ."
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+            (root / "test_feature.py").write_text(
+                "import unittest\n\nclass FeatureTests(unittest.TestCase):\n"
+                "    def test_feature(self):\n        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            self.tools.builder_map({"project_path": str(root)})
+            self.record_objective(root, "Deliver feature proof")
+            self.tools.builder_verify({"project_path": str(root), "commands": [command]})
+            self.tools.builder_budget({"project_path": str(root), "after_verify": True})
+            receipt = json.loads(self.tools.builder_receipt({"project_path": str(root)}))
+
+            allowed = self.tools.builder_pre_tool_call(
+                tool_name="write_file",
+                args={"path": str(root / "next.py")},
+            )
+            state = json.loads(
+                (root / ".hermes-builder" / "state.json").read_text(encoding="utf-8")
+            )
+
+        self.assertTrue(receipt["ready_to_report"])
+        self.assertIsNone(allowed)
+        self.assertFalse(state["guard"]["last_receipt_ready"])
+        self.assertEqual(state["guard"]["writes_since_verify"], 1)
 
 
 if __name__ == "__main__":

@@ -12,12 +12,10 @@ import argparse
 import atexit
 import json
 import os
-import queue
 import re
 import shutil
 import signal
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -827,6 +825,7 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
         "builder_budget",
         "builder_plan",
         "builder_resume",
+        "builder_acceptance",
         "builder_verify",
         "builder_receipt",
     }
@@ -836,6 +835,9 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
     writes_before_first_verify = 0
     budget_before_first_verify = 0
     first_verify_seen = False
+    first_receipt_seen = False
+    verify_after_first_receipt = 0
+    acceptance_after_first_receipt = 0
 
     verify_needles = verifier_leak_needles(verify_commands)
     for event in events:
@@ -845,6 +847,12 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
             tool = str(event.get("tool") or "")
             preview = str(event.get("preview") or "")
             tool_counts[tool] = tool_counts.get(tool, 0) + 1
+            if first_receipt_seen and tool == "builder_verify":
+                verify_after_first_receipt += 1
+            if first_receipt_seen and tool == "builder_acceptance":
+                acceptance_after_first_receipt += 1
+            if tool == "builder_receipt":
+                first_receipt_seen = True
             if tool in {"write_file", "patch"}:
                 writes_or_patches += 1
                 if not first_verify_seen:
@@ -869,11 +877,22 @@ def summarize_events(events: list[dict[str, Any]], verify_commands: tuple[str, .
         "required_tools_missing": sorted(required.difference(tool_counts)),
         "terminal_verify_leaks": terminal_verify_leaks,
         "max_event_gap_seconds": max(gaps) if gaps else 0,
+        "completion_churn": {
+            "receipt_calls": tool_counts.get("builder_receipt", 0),
+            "verify_after_first_receipt": verify_after_first_receipt,
+            "acceptance_after_first_receipt": acceptance_after_first_receipt,
+            "excess_completion_calls": (
+                max(0, tool_counts.get("builder_receipt", 0) - 1)
+                + verify_after_first_receipt
+                + acceptance_after_first_receipt
+            ),
+        },
         "staging": {
             "budget_used": tool_counts.get("builder_budget", 0) > 0,
             "budget_before_first_verify": budget_before_first_verify,
             "receipt_used": tool_counts.get("builder_receipt", 0) > 0,
             "resume_used": tool_counts.get("builder_resume", 0) > 0,
+            "acceptance_used": tool_counts.get("builder_acceptance", 0) > 0,
             "verify_used": tool_counts.get("builder_verify", 0) > 0,
             "writes_or_patches": writes_or_patches,
             "writes_before_first_verify": writes_before_first_verify,
