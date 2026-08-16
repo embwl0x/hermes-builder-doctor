@@ -2,6 +2,22 @@
 
 All notable Builder Doctor behavior changes are recorded here.
 
+## 0.8.10 — 2026-08-16
+
+- Add an action-latency gate to `builder_plan`, `builder_doctor`,
+  `builder_resume`, and `builder_acceptance`: until a project contains a real
+  implementation slice, the next turn must create a manifest, one core module,
+  and one focused test in at most three writes, then call `builder_budget` and
+  `builder_verify`.
+- Add regression coverage proving the action deadline repeats across planning,
+  acceptance, and resume calls until implementation actually starts.
+- Add a natural-prompt Node stress lane that never names Builder Doctor or its
+  tools, allowing end-to-end measurement of autonomous tool discovery.
+- Let the stress harness send an explicit Hermes provider slug through
+  `--provider` or `HERMES_PROVIDER`, which is required for some local aliases.
+- Report a missing generated project as a structured failed verification
+  instead of raising before the stress report can be written.
+
 ## 0.8.9 — 2026-08-15
 
 - Serialize project state persistence with a per-project file lock and use a
@@ -84,7 +100,7 @@ All notable Builder Doctor behavior changes are recorded here.
 - Treat placeholder-only Swift tests such as `XCTAssertTrue(true)` and
   `#expect(true)` as missing meaningful coverage.
 - Add regressions for acceptance-stage reopening, Swift batch sizing, and
-  placeholder-test rejection based on a real long-context ModelPulse run.
+  placeholder-test rejection based on a real long-context Swift project run.
 
 ## 0.8.0 — 2026-07-11
 

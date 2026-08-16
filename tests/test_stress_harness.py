@@ -4,6 +4,7 @@ import io
 import importlib.util
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,17 @@ def load_stress_module():
 
 
 class StressHarnessTests(unittest.TestCase):
+    def test_natural_catalog_does_not_prescribe_builder_tools(self) -> None:
+        module = load_stress_module()
+
+        catalog = module._task_catalog("natural")
+
+        self.assertEqual(set(catalog), {"node"})
+        prompt = catalog["node"].prompt.lower()
+        self.assertNotIn("builder doctor", prompt)
+        self.assertNotIn("builder_", prompt)
+        self.assertNotIn("tool", prompt)
+
     def test_probe_catalog_is_available_for_every_language_lane(self) -> None:
         module = load_stress_module()
 
@@ -31,6 +43,18 @@ class StressHarnessTests(unittest.TestCase):
 
         self.assertEqual(set(catalog), {"go", "node", "python", "rust", "swift"})
         self.assertIn("configured Hermes build workflow", catalog["python"].prompt)
+
+    def test_missing_project_is_reported_without_running_verifier(self) -> None:
+        module = load_stress_module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "never-created"
+            task = module._probe_task_catalog()["node"]
+            result = module.verify_project(task, root, timeout=5)
+
+        self.assertFalse(result["exists"])
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["commands"], [])
+        self.assertIn("not created", result["error"])
 
     def test_independent_zero_tests_detected_by_source_count(self) -> None:
         module = load_stress_module()
@@ -168,6 +192,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                 base_url="http://127.0.0.1:8644",
                 api_key="",
                 model="local-test",
+                provider="",
                 session_id="stress-test",
                 prompt="hello",
                 max_seconds=0,
@@ -204,6 +229,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                 base_url="http://127.0.0.1:8644",
                 api_key="",
                 model="local-test",
+                provider="",
                 session_id="stress-test",
                 prompt="hello",
                 max_seconds=0,
@@ -237,6 +263,7 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
                     os.environ,
                     {
                         "HERMES_MODEL": "my-local-model",
+                        "HERMES_PROVIDER": "my-local-provider",
                         "HERMES_BASE_URL": "http://hermes.example.local:9999",
                     },
                     clear=True,
@@ -244,7 +271,31 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
             args = module.parse_args()
 
         self.assertEqual(args.model, "my-local-model")
+        self.assertEqual(args.provider, "my-local-provider")
         self.assertEqual(args.base_url, "http://hermes.example.local:9999")
+
+    def test_start_run_sends_explicit_provider_when_configured(self) -> None:
+        module = load_stress_module()
+
+        with mock.patch.object(
+            module,
+            "request_json",
+            return_value={"run_id": "run-provider"},
+        ) as request:
+            run_id = module.start_run(
+                "http://127.0.0.1:8644",
+                "",
+                "Qwen3.8-27B-BF16",
+                "qwen38-27b-bf16-local",
+                "session-provider",
+                "build it",
+            )
+
+        self.assertEqual(run_id, "run-provider")
+        self.assertEqual(
+            request.call_args.args[3]["provider"],
+            "qwen38-27b-bf16-local",
+        )
 
 
 if __name__ == "__main__":
