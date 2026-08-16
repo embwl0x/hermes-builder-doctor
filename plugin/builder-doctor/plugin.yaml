@@ -1,6 +1,6 @@
 name: builder-doctor
 kind: standalone
-version: 0.8.9
+version: 0.8.10
 description: >
   Default guardrail tools for substantial software builds. Agents should use
   these naturally for app/project creation, repair, refactors, and verification:
@@ -13,7 +13,9 @@ description: >
   smaller verification batches and staged verified kernels so local models do
   not write large projects in one silent burst before testing, with stronger
   language identity checks such as one Go package per directory, zero-test
-  verifier protection, and project-root edit anchoring.
+  verifier protection, project-root edit anchoring, and an action-latency gate
+  that requires the first executable source-and-test slice immediately after
+  planning.
 author: Hermes Builder Doctor Contributors
 provides_tools:
   - builder_map

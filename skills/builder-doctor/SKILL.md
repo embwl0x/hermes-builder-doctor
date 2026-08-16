@@ -5,7 +5,7 @@ description: >
   build, create, repair, refactor, test, or verify a software app/project. It
   maps, plans, checkpoints, diagnoses, verifies, and receipts complex software
   builds so agents avoid repeated full-suite thrash and survive compaction.
-version: 0.8.9
+version: 0.8.10
 author: Hermes Builder Doctor Contributors
 license: MIT
 metadata:
@@ -104,6 +104,14 @@ exact commands that will later pass through `builder_verify`. Do not use
 by ID when the implementation plan changes.
 
 Hard gate for large builds:
+- Action-latency gate: planning is preparation, not progress. After
+  `builder_plan`, `builder_doctor`, `builder_resume`, and `builder_acceptance`
+  establish the first phase, the next implementation turn must write the
+  smallest executable slice: manifest/config, one core module, and one focused
+  test file. Use no more than three `write_file`/`patch` calls, then call
+  `builder_budget` and `builder_verify`. Do not spend another reasoning-only
+  turn designing the whole project; put uncertainty into the focused test and
+  let the verifier expose the first concrete gap.
 - After three `write_file`/`patch` calls in a phase, the hook will block more edits until you verify.
 - Once `.hermes-builder/state.json` exists, Builder Doctor blocks source edits
   until `objective` is recorded. If this fires, call `builder_resume` with

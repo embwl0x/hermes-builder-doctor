@@ -3,7 +3,7 @@
 This is the shortest path to install Builder Doctor into a Hermes agent and run
 one small verification.
 
-This guide targets Builder Doctor 0.8.9 or newer.
+This guide targets Builder Doctor 0.8.10 or newer.
 
 ## What You Need
 
@@ -130,13 +130,19 @@ After the tools are visible in Hermes, run disposable stress tests:
 ```bash
 export HERMES_BASE_URL="http://127.0.0.1:8644"  # replace with your Hermes api_server URL
 export HERMES_MODEL="your-local-model-alias"    # replace with a model listed by that gateway
+export HERMES_PROVIDER="your-provider-slug"     # optional for provider-scoped local aliases
 
 ./scripts/stress_hermes_builds.py \
   --base-url "$HERMES_BASE_URL" \
   --model "$HERMES_MODEL" \
+  --provider "$HERMES_PROVIDER" \
   --prompt-mode probe \
   --tasks node,python,go
 ```
+
+Omit `--provider` if your model is a normal gateway route. To test whether an
+agent reaches for Builder Doctor without being prompted to use it, run
+`--prompt-mode natural --tasks node`.
 
 `127.0.0.1:8644` is only a local default. If your Hermes gateway is configured
 on another host or port, use that URL instead.

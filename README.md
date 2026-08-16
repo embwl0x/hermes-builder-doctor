@@ -3,7 +3,7 @@
 Generic builder guardrails for Hermes agents running local or OpenAI-compatible
 models.
 
-Current release: **0.8.9**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
+Current release: **0.8.10**. See [CHANGELOG.md](CHANGELOG.md) for upgrade notes.
 
 Local coding models can be useful builders, but they tend to fail in predictable
 ways: too many files before the first test, repeated full-suite loops, weak
@@ -87,6 +87,13 @@ In 0.8.7, only `builder_verify` can establish verification proof. Manual
 checkpoint summaries remain visible history but cannot unlock a receipt or
 shadow a trusted passing verifier record.
 
+In 0.8.10, planning tools return an action deadline until the project contains
+a real implementation slice. After planning, the agent must create a manifest,
+one core module, and one focused test in at most three writes before checking
+its budget and calling `builder_verify`. This prevents reasoning-heavy local
+models from spending an entire build turn planning without producing runnable
+work.
+
 ## Repository Layout
 
 ```text
@@ -165,11 +172,13 @@ against that agent:
 ```bash
 export HERMES_BASE_URL="http://127.0.0.1:8644"  # replace with your Hermes api_server URL
 export HERMES_MODEL="your-local-model-alias"    # replace with a model listed by that gateway
+export HERMES_PROVIDER="your-provider-slug"     # optional; needed for aliases that are not model routes
 export API_SERVER_KEY="..."                     # only if your gateway requires it
 
 ./scripts/stress_hermes_builds.py \
   --base-url "$HERMES_BASE_URL" \
   --model "$HERMES_MODEL" \
+  --provider "$HERMES_PROVIDER" \
   --tasks node,python,go
 ```
 
@@ -178,12 +187,16 @@ the target agent's `platforms.api_server.extra.host` / `port` configuration, or
 any remote/Tailscale URL that reaches that Hermes gateway.
 `your-local-model-alias` must be the model name exposed by that gateway; the
 harness no longer assumes a project-specific default model.
+Pass `--provider` (or set `HERMES_PROVIDER`) when the local model alias needs an
+explicit Hermes provider slug. Omit it for normal model routes.
 
 Use `--prompt-mode giant` to test whether an intentionally over-scoped product
 prompt is converted into staged verified layers instead of a one-shot build.
 Use `--prompt-mode probe` first when testing a new or smaller model: the prompts
 are compact and rely on the configured Hermes build workflow instead of naming
 every Builder Doctor tool explicitly.
+Use `--prompt-mode natural --tasks node` to measure whether an agent discovers
+and follows Builder Doctor from an ordinary build request that names no tools.
 The JSON report includes staging signals such as budget use, writes before the
 first verifier, receipt use, raw terminal verifier leaks, and completion churn
 (verifier/acceptance/receipt calls made after the first receipt).

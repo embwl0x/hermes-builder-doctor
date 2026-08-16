@@ -96,11 +96,43 @@ def install_shutdown_handlers() -> None:
 
 
 def _task_catalog(prompt_mode: str = "kernel") -> dict[str, StressTask]:
+    if prompt_mode == "natural":
+        return _natural_task_catalog()
     if prompt_mode == "probe":
         return _probe_task_catalog()
     if prompt_mode == "giant":
         return _giant_task_catalog()
     return _kernel_task_catalog()
+
+
+def _natural_task_catalog() -> dict[str, StressTask]:
+    return {
+        "node": StressTask(
+            name="node",
+            label="Natural-prompt Node event-sourced policy engine",
+            root_name="node_policy_engine",
+            verify_commands=("npm test",),
+            prompt="""
+Build a substantial Node/ESM project at {project_root}.
+
+Build stage 1 of a larger event-sourced policy engine. Stage 1 must include:
+- package.json using ESM and a bounded `npm test` script with Node's built-in
+  test runner, no external npm dependencies.
+- Core event log with append, replay, snapshot, optimistic conflict detection,
+  deterministic serialization, and branch/rebase helpers.
+- Policy rule compiler for simple JSON rules with AND/OR/NOT, numeric/string
+  comparisons, and explainable decisions.
+- Scenario simulator that applies events to rule decisions and emits a compact
+  audit trail.
+- Focused tests covering replay determinism, conflicts, snapshots, rule
+  explanations, scenario audit output, and invalid rule handling.
+
+Keep this as a verified kernel, not the full platform. Defer UI, persistence
+adapters, distributed storage, and plugin systems. Make reasonable decisions
+yourself, test it thoroughly, and do not stop until it works.
+""",
+        ),
+    }
 
 
 def _probe_task_catalog() -> dict[str, StressTask]:
@@ -566,16 +598,26 @@ def stream_events(
             errors.append(str(exc))
 
 
-def start_run(base_url: str, api_key: str, model: str, session_id: str, prompt: str) -> str:
+def start_run(
+    base_url: str,
+    api_key: str,
+    model: str,
+    provider: str,
+    session_id: str,
+    prompt: str,
+) -> str:
+    payload = {
+        "model": model,
+        "session_id": session_id,
+        "input": prompt,
+    }
+    if provider:
+        payload["provider"] = provider
     response = request_json(
         "POST",
         f"{base_url}/v1/runs",
         api_key,
-        {
-            "model": model,
-            "session_id": session_id,
-            "input": prompt,
-        },
+        payload,
     )
     run_id = response.get("run_id")
     if not run_id:
@@ -599,13 +641,14 @@ def run_hermes_task(
     base_url: str,
     api_key: str,
     model: str,
+    provider: str,
     session_id: str,
     prompt: str,
     max_seconds: int,
     progress: bool,
 ) -> dict[str, Any]:
     started_at = time.time()
-    run_id = start_run(base_url, api_key, model, session_id, prompt)
+    run_id = start_run(base_url, api_key, model, provider, session_id, prompt)
     register_active_run(base_url, api_key, run_id)
     events: list[dict[str, Any]] = []
     stream_errors: list[str] = []
@@ -712,6 +755,16 @@ def run_command(command: str, cwd: Path, timeout: int) -> dict[str, Any]:
 
 
 def verify_project(task: StressTask, project_root: Path, timeout: int) -> dict[str, Any]:
+    if not project_root.is_dir():
+        return {
+            "exists": False,
+            "commands": [],
+            "passed": False,
+            "source_file_count": 0,
+            "test_count": 0,
+            "zero_tests_detected": False,
+            "error": "Project directory was not created by the Hermes run.",
+        }
     command_results = [run_command(command, project_root, timeout) for command in task.verify_commands]
     source_files = [
         path
@@ -973,6 +1026,7 @@ def run_task(
     base_url: str,
     api_key: str,
     model: str,
+    provider: str,
     max_run_seconds: int,
     verify_timeout: int,
     repairs: int,
@@ -988,6 +1042,7 @@ def run_task(
         base_url=base_url,
         api_key=api_key,
         model=model,
+        provider=provider,
         session_id=f"builder-doctor-stress-{task.name}-{int(time.time())}",
         prompt=prompt,
         max_seconds=max_run_seconds,
@@ -1006,6 +1061,7 @@ def run_task(
             base_url=base_url,
             api_key=api_key,
             model=model,
+            provider=provider,
             session_id=f"builder-doctor-stress-{task.name}-repair-{int(time.time())}",
             prompt=make_repair_prompt(project_root, verification),
             max_seconds=max(240, int(max_run_seconds * 0.6)),
@@ -1101,10 +1157,15 @@ def parse_args() -> argparse.Namespace:
         default=os.environ.get("HERMES_MODEL", ""),
         help="Model alias exposed by the target Hermes gateway. Can also be set with HERMES_MODEL.",
     )
+    parser.add_argument(
+        "--provider",
+        default=os.environ.get("HERMES_PROVIDER", ""),
+        help="Hermes provider slug for the requested model. Required for local aliases that are not model routes; can also be set with HERMES_PROVIDER.",
+    )
     parser.add_argument("--env-file", default=os.environ.get("HERMES_ENV_FILE", str(Path.home() / ".hermes" / ".env")))
     parser.add_argument("--workspace", default="")
     parser.add_argument("--output", default="")
-    parser.add_argument("--prompt-mode", choices=("probe", "kernel", "giant"), default="kernel")
+    parser.add_argument("--prompt-mode", choices=("natural", "probe", "kernel", "giant"), default="kernel")
     catalog = _task_catalog("kernel")
     parser.add_argument("--tasks", default=",".join(catalog), help=f"Comma-separated tasks: {', '.join(catalog)}")
     parser.add_argument("--max-run-seconds", type=int, default=900)
@@ -1138,6 +1199,8 @@ def main() -> int:
     print(f"workspace={workspace}", flush=True)
     print(f"output={output_path}", flush=True)
     print(f"model={args.model}", flush=True)
+    if args.provider:
+        print(f"provider={args.provider}", flush=True)
 
     results = []
     try:
@@ -1149,6 +1212,7 @@ def main() -> int:
                     base_url=args.base_url.rstrip("/"),
                     api_key=api_key,
                     model=args.model,
+                    provider=args.provider,
                     max_run_seconds=args.max_run_seconds,
                     verify_timeout=args.verify_timeout,
                     repairs=args.repairs,
@@ -1162,6 +1226,7 @@ def main() -> int:
             "finished_at": datetime.now().isoformat(timespec="seconds"),
             "base_url": args.base_url,
             "model": args.model,
+            "provider": args.provider,
             "prompt_mode": args.prompt_mode,
             "workspace": str(workspace),
             "results": results,

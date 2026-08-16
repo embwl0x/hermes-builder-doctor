@@ -389,6 +389,52 @@ class BuilderDoctorToolTests(unittest.TestCase):
         self.assertIn("no saved objective", blocked["message"])
         self.assertIsNone(allowed)
 
+    def test_empty_project_plan_requires_immediate_executable_slice(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = json.loads(
+                self.tools.builder_plan(
+                    {"project_path": str(root), "objective": "Build a Node policy kernel with tests."}
+                )
+            )
+            doctor = json.loads(self.tools.builder_doctor({"project_path": str(root)}))
+
+        self.assertFalse(plan["execution_checkpoint"]["implementation_started"])
+        self.assertIn("ACTION DEADLINE", plan["execution_checkpoint"]["next_required"][0])
+        self.assertIn("ACTION DEADLINE", doctor["next_required"][0])
+
+    def test_acceptance_and_resume_repeat_action_deadline_until_slice_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            resumed = json.loads(
+                self.tools.builder_resume(
+                    {
+                        "project_path": str(root),
+                        "action": "update",
+                        "objective": "Build a Node policy kernel with tests.",
+                    }
+                )
+            )
+            accepted = json.loads(
+                self.tools.builder_acceptance(
+                    {
+                        "project_path": str(root),
+                        "action": "replace",
+                        "criteria": [
+                            {
+                                "id": "kernel",
+                                "description": "Policy kernel behavior is covered by focused tests.",
+                                "evidence_paths": ["src/policy.js", "test/policy.test.js"],
+                                "verification_commands": ["npm test"],
+                            }
+                        ],
+                    }
+                )
+            )
+
+        self.assertIn("ACTION DEADLINE", resumed["next_required"][-1])
+        self.assertIn("ACTION DEADLINE", accepted["next_required"][-1])
+
     def test_builder_budget_hard_stops_at_language_source_cap(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -897,7 +943,7 @@ class BuilderDoctorToolTests(unittest.TestCase):
     def test_terminal_cd_then_script_outside_mapped_project_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "project"
-            outside = Path(tmp) / "NativeAgent"
+            outside = Path(tmp) / "OtherProject"
             root.mkdir()
             (outside / "script").mkdir(parents=True)
             self.tools.builder_map({"project_path": str(root)})
@@ -917,7 +963,7 @@ class BuilderDoctorToolTests(unittest.TestCase):
     def test_terminal_absolute_script_outside_mapped_project_is_blocked(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "project"
-            outside_script = Path(tmp) / "NativeAgent" / "script" / "install_app.sh"
+            outside_script = Path(tmp) / "OtherProject" / "script" / "install_app.sh"
             root.mkdir()
             outside_script.parent.mkdir(parents=True)
             outside_script.write_text("#!/bin/sh\n", encoding="utf-8")
@@ -1329,8 +1375,15 @@ class BuilderDoctorToolTests(unittest.TestCase):
         command = "python3 -m unittest discover -s ."
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            for name in ("api.py", "ui.py", "test_product.py"):
+            for name in ("api.py", "ui.py"):
                 (root / name).write_text("VALUE = True\n", encoding="utf-8")
+            (root / "test_product.py").write_text(
+                "import unittest\n\n"
+                "class ProductTests(unittest.TestCase):\n"
+                "    def test_contract(self):\n"
+                "        self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
             criteria = [
                 {
                     "id": "api",

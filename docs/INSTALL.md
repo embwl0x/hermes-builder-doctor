@@ -5,7 +5,7 @@ Builder Doctor has two parts:
 1. A Hermes plugin at `plugin/builder-doctor`.
 2. A Hermes skill card at `skills/builder-doctor`.
 
-The current plugin and skill version is 0.8.9. Upgrades replace both parts
+The current plugin and skill version is 0.8.10. Upgrades replace both parts
 together so tool schemas and agent guidance stay in sync.
 
 ## Ask A Hermes Agent To Install It
@@ -116,6 +116,11 @@ Do not overwrite a working production config with the example snippets.
   without weakening source/config mutation guards.
 - 0.8.6 blocks terminal working-directory changes and directly executed scripts
   that escape the mapped project root.
+- 0.8.7 makes `builder_verify` the sole source of trusted verification proof.
+- 0.8.8 and 0.8.9 preserve acceptance, objective, checkpoint, verification,
+  and guard state across parallel tool saves.
+- 0.8.10 requires an immediate executable slice after planning and adds natural
+  prompt plus explicit-provider lanes to the Hermes stress harness.
 
 After any upgrade, restart Hermes. Existing project state remains readable, but
 an old acceptance contract may require one fresh `builder_verify` run before it

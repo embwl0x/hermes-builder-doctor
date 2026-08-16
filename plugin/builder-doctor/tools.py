@@ -255,6 +255,32 @@ def _walk_project_files(root: Path, max_files: int = 1000) -> List[Path]:
     return files
 
 
+def _has_implementation_slice(root: Path) -> bool:
+    """Return whether a project has begun a real, verifiable implementation."""
+    manifest_names = {"package.json", "Package.swift", "pyproject.toml", "Cargo.toml", "go.mod"}
+    code_suffixes = {
+        ".c", ".cc", ".cpp", ".go", ".h", ".hpp", ".js", ".jsx",
+        ".mjs", ".py", ".rs", ".swift", ".ts", ".tsx", ".vue",
+    }
+    for path in _walk_project_files(root, max_files=500):
+        if ".hermes-builder" in path.parts:
+            continue
+        if path.name in manifest_names or path.suffix in code_suffixes:
+            return True
+    return False
+
+
+def _first_slice_action() -> str:
+    return (
+        "ACTION DEADLINE: the next implementation turn must create the smallest "
+        "executable slice now (manifest/config, one core module, and one focused "
+        "test file; at most 3 write_file/patch calls), then call builder_budget "
+        "and builder_verify. Do not spend another turn producing a broader plan "
+        "or solving the whole project in hidden analysis; externalize uncertainty "
+        "into the focused test and verifier."
+    )
+
+
 def _identifier_text(text: str) -> str:
     text = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", text)
     return text.replace("_", " ").replace("-", " ")
@@ -3555,11 +3581,15 @@ def builder_doctor(args: Dict[str, Any], **_: Any) -> str:
                 })
 
     summary = f"Scanned {root}. Found {len(findings)} issue(s)."
+    next_required = []
+    if not _has_implementation_slice(root):
+        next_required.append(_first_slice_action())
     return _json({
         "success": True,
         "project_path": project_path,
         "summary": summary,
         "findings": findings,
+        "next_required": next_required,
     })
 
 
@@ -4190,6 +4220,11 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
         pass
 
     already_complete = bool(action == "read" and guard.get("last_receipt_ready") and receipt_ready)
+    next_required = []
+    if already_complete:
+        next_required = ["The stage is already receipted. Stop calling builder tools and send the final answer now."]
+    elif action in {"set", "replace", "update"} and not _has_implementation_slice(root):
+        next_required = [_first_slice_action()]
     return _json({
         "success": True,
         "project_path": project_path,
@@ -4202,11 +4237,7 @@ def builder_acceptance(args: Dict[str, Any], **_: Any) -> str:
         "reason": evaluation["reason"],
         "state_recorded": True,
         "already_complete": already_complete,
-        "next_required": (
-            ["The stage is already receipted. Stop calling builder tools and send the final answer now."]
-            if already_complete
-            else []
-        ),
+        "next_required": next_required,
     })
 
 
@@ -4940,11 +4971,18 @@ def builder_plan(args: Dict[str, Any], **_: Any) -> str:
         "state_recorded": state_recorded,
         "state_warning": state_warning,
         "phases": phases,
+        "execution_checkpoint": {
+            "implementation_started": _has_implementation_slice(root),
+            "next_required": (
+                [] if _has_implementation_slice(root) else [_first_slice_action()]
+            ),
+        },
         "rules": [
             "Touch no more than the phase max_file_batch before verifying or recording state.",
             f"Use the {language_policy['preset']} first slice: " + "; ".join(language_policy["first_slice"]),
             "Forbidden in this first slice: " + "; ".join(language_policy["forbidden"]),
             "Hard stop after 4 file writes/patches in one phase: run builder_verify before expanding scope.",
+            _first_slice_action(),
             "Call builder_budget after each source/test batch and after successful verification; if it reports over_budget, stop adding scope and receipt/defer.",
             "Before source edits, call builder_acceptance action=replace with non-empty criteria; each criterion needs project evidence paths and exact builder_verify commands.",
             "After builder_budget reports within budget, the next source/test batch is still capped at two files or three write_file/patch calls before builder_verify.",
@@ -5126,6 +5164,8 @@ def builder_resume(args: Dict[str, Any], **_: Any) -> str:
             "The current stage has reached its write budget.",
             "Call builder_budget, then builder_verify before writing more files.",
         ])
+    elif action in {"update", "replace"} and not _has_implementation_slice(root):
+        next_required.append(_first_slice_action())
     return _json({
         "success": True,
         "project_path": str(root),
